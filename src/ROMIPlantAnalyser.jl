@@ -11,8 +11,7 @@ using GeometryBasics, JSON, Serialization, Logging
 using CUDA, Adapt, StaticArrays
 using LinearAlgebra, Krylov, LinearOperators
 using DataStructures, MarchingCubes
-using GLMakie, Images, ImageMorphology
-using StatsBase
+using GLMakie, Images, ImageMorphology, StatsBase
 using PrecompileTools: @setup_workload, @compile_workload
 
 include("ROMITypes.jl")
@@ -35,7 +34,7 @@ export ROMIViewer, run_and_load_colmap, romi_launch
     gl = GridLayout(fig[1, 1])
 
     @compile_workload begin
-        rv = ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params)
+        rv = ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, verbose = false)
         romi_mask_and_bbox!(rv, gl)
         romi_volume!(rv, gl)
         romi_skeleton!(rv, gl)
@@ -47,7 +46,7 @@ function __init__()
     CUDA.functional() || return nothing
     try
         scan, vol_params, bbox_params = generate_synthetic_plant_scan(mktempdir())
-        ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params)
+        ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, verbose = false)
     catch e
         @warn "GPU kernel warm-up failed!" exception = (e, catch_backtrace())
     end

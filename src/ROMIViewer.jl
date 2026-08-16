@@ -218,8 +218,9 @@ function ROMIViewer(data::ROMIScan;
                     bbox_params::ROMIBboxParams = ROMIBboxParams(),
                     mask_params::ROMIMaskParams = ROMIMaskParams(),
                     vol_params::ROMIVolumeParams = ROMIVolumeParams(bbox = initialize_bbox(data, bbox_params), λ = 30.0),
-                    skel_params::ROMISkeletonParams = ROMISkeletonParams())
-    @info "Initializing viewer data..."
+                    skel_params::ROMISkeletonParams = ROMISkeletonParams(),
+                    verbose::Bool = true)
+    verbose && @info "Initializing viewer data..."
     with_logger(NullLogger()) do
         # we need at least the masked frame but precomputing the volume with a 
         # smoothing will trigger compilation of the CUDA kernel!
