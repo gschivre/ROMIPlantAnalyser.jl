@@ -1,0 +1,13 @@
+name = "ROMIPlantAnalyser"
+uuid = "b98b6d8b-321f-4323-b3e3-2b5b1f277f37"
+authors = ["Geoffrey Schivre <geoffrey.schivre@gmail.com> and contributors"]
+version = "1.0.0-DEV"
+
+[compat]
+julia = "1.10.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
