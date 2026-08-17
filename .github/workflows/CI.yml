@@ -36,6 +36,15 @@ jobs:
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
+      # GLMakie's dependency GLFW.jl calls glfwInit() unconditionally when loaded, even
+      # just for precompilation — needs a real (or virtual) display to exist regardless
+      # of anything our own code does with GLMakie.
+      - name: Install and start a virtual display (Xvfb)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xorg-dev mesa-utils xvfb libgl1 freeglut3-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1

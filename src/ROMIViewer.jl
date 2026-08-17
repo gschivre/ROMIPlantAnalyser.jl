@@ -318,9 +318,9 @@ function romi_mask_and_bbox!(rv::ROMIViewer, gl::GridLayout)
     # Bounding Box Controls
     Label(sidebar[1, 1], "Bounding Box Parameters"; font = :bold, halign = :center, tellwidth = false)
     sg_bbox = SliderGrid(sidebar[2, 1],
-        (label = "x origin", range = -150:150, format = "{:.0f}mm", startvalue = rv.bbox_params.x_offset),
-        (label = "y origin", range = -150:150, format = "{:.0f}mm", startvalue = rv.bbox_params.y_offset),
-        (label = "z origin", range = -150:150, format = "{:.0f}mm", startvalue = rv.bbox_params.z_offset),
+        (label = "x origin", range = -50:50, format = "{:.0f}mm", startvalue = rv.bbox_params.x_offset),
+        (label = "y origin", range = -50:50, format = "{:.0f}mm", startvalue = rv.bbox_params.y_offset),
+        (label = "z origin", range = -150:0, format = "{:.0f}mm", startvalue = rv.bbox_params.z_offset),
         (label = "x width", range = 10:150, format = "{:.0f}mm", startvalue = rv.bbox_params.x_span),
         (label = "y width", range = 10:150, format = "{:.0f}mm", startvalue = rv.bbox_params.y_span),
         (label = "z width", range = 100:500, format = "{:.0f}mm", startvalue = rv.bbox_params.z_span);
@@ -914,67 +914,86 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
     end
     n = length(state.paths)
 
-    # Top row: Tab Navigation Headers
-    nav_bar = GridLayout(gl[1, 1]; tellheight = true, tellwidth = false, halign = :center)
-    tab_bar = GridLayout(gl[2, 1]; tellheight = true, halign = :center)
-
+    active_tab = Observable{Int}(1)
     save_status = Observable("")
     confirm_overwrite = Observable(false)
-    if n > 1
-        prev_btn = Button(nav_bar[1, 1], label = "← Prev")
-        Label(nav_bar[1, 2], "Plant $(state.idx) / $n: $(basename(state.paths[state.idx]))")
-        next_btn = Button(nav_bar[1, 3], label = "Next →")
-        on(prev_btn.clicks) do _
-            (state.idx > 1) && start_scan!(state.idx - 1)
+
+    # Renders the full navigation, tab header, and active tab content
+    function render_main_ui()
+        clear_panel!(gl)
+
+        # Top row: Navigation & Tab Headers
+        nav_bar = GridLayout(gl[1, 1]; tellheight = true, tellwidth = false, halign = :center)
+        tab_bar = GridLayout(gl[2, 1]; tellheight = true, halign = :center)
+
+        if n > 1
+            prev_btn = Button(nav_bar[1, 1], label = "← Prev")
+            Label(nav_bar[1, 2], "Plant $(state.idx) / $n: $(basename(state.paths[state.idx]))")
+            next_btn = Button(nav_bar[1, 3], label = "Next →")
+            
+            on(prev_btn.clicks) do _
+                (state.idx > 1) && start_scan!(state.idx - 1)
+            end
+            on(next_btn.clicks) do _
+                if haskey(state.results, plant_id(state.paths[state.idx]))
+                    confirm_overwrite[] = true
+                else
+                    commit_result!(state, rv)
+                    (state.idx < n) && start_scan!(state.idx + 1)
+                end
+            end
+            
+            btn_save = Button(nav_bar[1, 4];
+                                label = "Save Results",
+                                buttoncolor = :forestgreen,
+                                buttoncolor_active = :darkgreen,
+                                buttoncolor_hover = :darkgreen,
+                                labelcolor = :white,
+                                labelcolor_active = :white,
+                                labelcolor_hover = :white)
+            Label(nav_bar[1, 5], save_status)
+        else
+            btn_save = Button(nav_bar[1, 1];
+                                label = "Save Results",
+                                buttoncolor = :forestgreen,
+                                buttoncolor_active = :darkgreen,
+                                buttoncolor_hover = :darkgreen,
+                                labelcolor = :white,
+                                labelcolor_active = :white,
+                                labelcolor_hover = :white)
+            Label(nav_bar[1, 2], save_status)
         end
-        on(next_btn.clicks) do _
-            if haskey(state.results, plant_id(state.paths[state.idx]))
-                confirm_overwrite[] = true
-            else
+
+        on(btn_save.clicks) do _
+            try
                 commit_result!(state, rv)
-                (state.idx < n) && start_scan!(state.idx + 1)
+                save_status[] = "Saved successfully!"
+            catch err
+                save_status[] = "Save failed!"
+                @error "Failed to compute or commit results" exception = (err, catch_backtrace())
             end
         end
-        btn_save = Button(nav_bar[1, 4];
-                            label = "Save Results",
-                            buttoncolor = :forestgreen,
-                            buttoncolor_active = :darkgreen,
-                            buttoncolor_hover = :darkgreen,
-                            labelcolor = :white,
-                            labelcolor_active = :white,
-                            labelcolor_hover = :white)
-        Label(nav_bar[1, 5], save_status)
-    else
-        btn_save = Button(nav_bar[1, 1];
-                            label = "Save Results",
-                            buttoncolor = :forestgreen,
-                            buttoncolor_active = :darkgreen,
-                            buttoncolor_hover = :darkgreen,
-                            labelcolor = :white,
-                            labelcolor_active = :white,
-                            labelcolor_hover = :white)
-        Label(nav_bar[1, 2], save_status)
-    end
 
-    # Save - always overwrite!
-    on(btn_save.clicks) do _
-        try
-            commit_result!(state, rv)
-            save_status[] = "Saved successfully!"
-        catch err
-            save_status[] = "Save failed!"
-            @error "Failed to compute or commit results" exception = (err, catch_backtrace())
+        # Tab Navigation Buttons with active highlight
+        btn_labels = ["1. Bounding Box & Mask", "2. Volume", "3. Skeleton"]
+        buttons = Button[]
+
+        for (i, label) in enumerate(btn_labels)
+            b = Button(tab_bar[1, i]; 
+                       label = label, 
+                       buttoncolor = (i == active_tab[] ? :lightskyblue : :whitesmoke), 
+                       tellwidth = false)
+            push!(buttons, b)
+            on(b.clicks) do _
+                active_tab[] = i
+            end
         end
-    end
 
-    # Main content viewport
-    panel_gl = GridLayout(gl[3, 1])
+        # Main content viewport
+        panel_gl = GridLayout(gl[3, 1])
 
-    active_tab = Observable{Int}(1)
-
-    # Dynamic Tab Switcher using clear_panel!
-    on(active_tab) do i
-        clear_panel!(panel_gl)
+        # Load active tab view
+        i = active_tab[]
         if i == 1
             romi_mask_and_bbox!(rv, panel_gl)
         elseif i == 2
@@ -984,25 +1003,56 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
         end
     end
 
-    # Overwrite confirmation
+    # Tab change listener
+    on(active_tab) do _
+        !confirm_overwrite[] && render_main_ui()
+    end
+
+    # Overwrite confirmation modal view
     on(confirm_overwrite) do show_confirm
+        clear_panel!(gl) # Clears all top nav bars and content views
         if show_confirm
-            clear_panel!(panel_gl)
-            Label(panel_gl[1, 1],
-                "Plant $(state.idx) / $n ($(basename(state.paths[state.idx]))) already has saved results.\nOverwrite them with the current analysis?";
+            card_gl = GridLayout(gl[:, 1]; halign = :center, valign = :center, tellwidth = false, tellheight = false)
+            Box(
+                card_gl[1, 1],
+                color = (:gray, 0.08),
+                strokecolor = :gray,
+                strokewidth = 2,
+                cornerradius = 12,
+                width = 550,
+                tellheight = false,
+                tellwidth = false
+            )
+            dial_gl = GridLayout(card_gl[1, 1]; alignmode = Outside(30, 30, 30, 30))
+            Label(dial_gl[1, 1],
+                "Plant $(state.idx) / $n ($(basename(state.paths[state.idx]))) already has saved results.\nOverwrite them with the current analysis?",
                 fontsize = 18, halign = :center, justification = :center)
-            btn_row = GridLayout(panel_gl[2, 1]; halign = :center)
+
+            btn_row = GridLayout(dial_gl[2, 1]; halign = :center, tellwidth = false)
             btn_yes = Button(btn_row[1, 1];
                             label = "Yes",
+                            buttoncolor = :limegreen,
+                            buttoncolor_active = :olivedrab,
+                            buttoncolor_hover = :olivedrab,
+                            labelcolor = :white,
+                            labelcolor_active = :white,
+                            labelcolor_hover = :white)
+            btn_no = Button(btn_row[1, 2];
+                            label = "No",
                             buttoncolor = :crimson,
                             buttoncolor_active = :firebrick,
                             buttoncolor_hover = :firebrick,
                             labelcolor = :white,
                             labelcolor_active = :white,
                             labelcolor_hover = :white)
-            btn_cancel = Button(btn_row[1, 2]; label = "Cancel")
+            btn_cancel = Button(btn_row[1, 3]; label = "Cancel")
+
             on(btn_yes.clicks) do _
                 commit_result!(state, rv)
+                confirm_overwrite[] = false
+                (state.idx < n) && start_scan!(state.idx + 1)
+            end
+            on(btn_no.clicks) do _
                 confirm_overwrite[] = false
                 (state.idx < n) && start_scan!(state.idx + 1)
             end
@@ -1010,27 +1060,12 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
                 confirm_overwrite[] = false
             end
         else
-            notify(active_tab)
+            render_main_ui()
         end
     end
 
-    # Tab Navigation Buttons with active highlight
-    btn_labels = ["1. Bounding Box & Mask", "2. Volume", "3. Skeleton"]
-    buttons = Button[]
-
-    for (i, label) in enumerate(btn_labels)
-        b = Button(tab_bar[1, i]; label = label, buttoncolor = (i == 1 ? :lightskyblue : :whitesmoke), tellwidth = false)
-        push!(buttons, b)
-        on(b.clicks) do _
-            for (j, btn) in enumerate(buttons)
-                btn.buttoncolor = (j == i ? :lightskyblue : :whitesmoke)
-            end
-            active_tab[] = i
-        end
-    end
-
-    # Load initial tab
-    notify(active_tab)
+    # Initial view render
+    render_main_ui()
 
     return nothing
 end
@@ -1089,9 +1124,21 @@ function romi_launch()
                 start_scan!(Int(start_idx))
             end
         elseif s == :busy
-            Label(root_gl[1, 1],
+            card_gl = GridLayout(root_gl[:, 1]; halign = :center, valign = :center, tellwidth = false, tellheight = false)
+            Box(
+                card_gl[1, 1],
+                color = (:gray, 0.08),
+                strokecolor = :gray,
+                strokewidth = 2,
+                cornerradius = 12,
+                width = 550,
+                tellheight = false,
+                tellwidth = false
+            )
+            msg_gl = GridLayout(card_gl[1, 1]; alignmode = Outside(30, 30, 30, 30))
+            Label(msg_gl[1, 1],
                   "Running COLMAP & Initializing viewer data for $(basename(state.paths[state.idx]))\nPlant $(state.idx) / $(length(state.paths))…",
-                  fontsize = 18, tellwidth = false)
+                  fontsize = 18, halign = :center, justification = :center)
         elseif s == :ready
             romi_viewer!(start_scan!, state, root_gl)
         end

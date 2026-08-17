@@ -27,7 +27,7 @@ export ROMIVolume, ROMISkeleton, ROMIAnglesAndInternodes
 export ROMIMaskParams, ROMIVolumeParams, ROMISkeletonParams, ROMIBboxParams
 export ROMIViewer, ROMIResults, run_and_load_colmap, romi_launch
 
-# Precompile workload for CPU pipeline & GLMakie plot recipes
+# Precompile workload for CPU pipeline
 @setup_workload begin
     scan, vol_params, bbox_params = generate_synthetic_plant_scan(mktempdir())
     @compile_workload begin
@@ -41,6 +41,7 @@ function __init__()
     (get(ENV, "ROMI_SKIP_WARMUP", "false") == "true") && return nothing
     CUDA.functional() || return nothing
     try
+        @info "ROMIPlantAnalyser GPU & GLMakie warm-up..."
         scan, vol_params, bbox_params = generate_synthetic_plant_scan(mktempdir())
         rv = ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, verbose = false)
         fig = Figure()
