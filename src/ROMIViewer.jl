@@ -75,6 +75,19 @@ end
     y_span::Int = 50
     z_span::Int = 250
 end
+function Base.copyto!(dest::ROMIBboxParams, src::ROMIBboxParams)
+    dest.x_offset = src.x_offset
+    dest.y_offset = src.y_offset
+    dest.z_offset = src.z_offset
+    dest.x_span = src.x_span
+    dest.y_span = src.y_span
+    dest.z_span = src.z_span
+    return dest
+end
+function Base.copy(p::ROMIBboxParams)
+    pnew = ROMIBboxParams()
+    copyto!(pnew, p)
+end
 
 """
     pose_centroid(dataset::ROMIScan)
@@ -225,6 +238,7 @@ function ROMIViewer(data::ROMIScan;
                     mask_params::ROMIMaskParams = ROMIMaskParams(),
                     vol_params::ROMIVolumeParams = ROMIVolumeParams(bbox = initialize_bbox(data, bbox_params), λ = 30.0),
                     skel_params::ROMISkeletonParams = ROMISkeletonParams(),
+                    skel::Union{Nothing, ROMISkeleton} = nothing,
                     verbose::Bool = true)
     verbose && @info "Initializing viewer data..."
     with_logger(NullLogger()) do
@@ -233,9 +247,17 @@ function ROMIViewer(data::ROMIScan;
         mf = ROMIMaskedFrames(data, mask_params)
         vol = ROMIVolume(mf, vol_params)
         msh = makemesh(vol, skel_params.t)
-        skl = ROMISkeleton(vol, skel_params)
+        skl = (isnothing(skel) ? ROMISkeleton(vol, skel_params) : copy(skel))
         ROMIViewer(data, bbox_params, vol_params.voxel_size, mf, vol, msh, skl)
     end
+end
+
+struct ROMIResults
+    result::ROMIAnglesAndInternodes
+    bbox_params::ROMIBboxParams
+    mask_params::ROMIMaskParams
+    vol_params::ROMIVolumeParams
+    skel::ROMISkeleton # save the whole skeleton not just its parameters
 end
 
 mutable struct ROMIViewerState
@@ -243,7 +265,7 @@ mutable struct ROMIViewerState
     paths::Vector{String}
     idx::Int
     rv::Union{Nothing, ROMIViewer}
-    results::Dict{String, ROMIAnglesAndInternodes}
+    results::Dict{String, ROMIResults}
 end
 
 plant_id(path::String) = basename(rstrip(path, ('/', '\\')))
@@ -252,12 +274,18 @@ results_file(state::ROMIViewerState) = joinpath(state.root_path, basename(rstrip
 
 function load_results!(state::ROMIViewerState)
     f = results_file(state)
-    state.results = (isfile(f) ? deserialize(f) : Dict{String, ROMIAnglesAndInternodes}())
+    state.results = (isfile(f) ? deserialize(f) : Dict{String, ROMIResults}())
     return nothing
 end
 
-function commit_result!(state::ROMIViewerState, result)
+function commit_result!(state::ROMIViewerState, rv::ROMIViewer)
     id = plant_id(state.paths[state.idx])
+    result = ROMIResults(ROMIAnglesAndInternodes(rv.skl),
+        copy(rv.bbox_params),
+        copy(rv.mf.params),
+        copy(rv.vol.params),
+        copy(rv.skl)
+    )
     state.results[id] = result
     res_file = results_file(state)
     @info "Saving to $res_file"
@@ -891,17 +919,21 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
     tab_bar = GridLayout(gl[2, 1]; tellheight = true, halign = :center)
 
     save_status = Observable("")
+    confirm_overwrite = Observable(false)
     if n > 1
         prev_btn = Button(nav_bar[1, 1], label = "← Prev")
         Label(nav_bar[1, 2], "Plant $(state.idx) / $n: $(basename(state.paths[state.idx]))")
         next_btn = Button(nav_bar[1, 3], label = "Next →")
         on(prev_btn.clicks) do _
-            state.idx > 1 && start_scan!(state.idx - 1)
+            (state.idx > 1) && start_scan!(state.idx - 1)
         end
         on(next_btn.clicks) do _
-            res = ROMIAnglesAndInternodes(rv.skl)
-            commit_result!(state, res)
-            state.idx < n && start_scan!(state.idx + 1)
+            if haskey(state.results, plant_id(state.paths[state.idx]))
+                confirm_overwrite[] = true
+            else
+                commit_result!(state, rv)
+                (state.idx < n) && start_scan!(state.idx + 1)
+            end
         end
         btn_save = Button(nav_bar[1, 4];
                             label = "Save Results",
@@ -924,11 +956,10 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
         Label(nav_bar[1, 2], save_status)
     end
 
-    # Save
+    # Save - always overwrite!
     on(btn_save.clicks) do _
         try
-            res = ROMIAnglesAndInternodes(rv.skl)
-            commit_result!(state, res)
+            commit_result!(state, rv)
             save_status[] = "Saved successfully!"
         catch err
             save_status[] = "Save failed!"
@@ -950,6 +981,36 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
             romi_volume!(rv, panel_gl)
         elseif i == 3
             romi_skeleton!(rv, panel_gl)
+        end
+    end
+
+    # Overwrite confirmation
+    on(confirm_overwrite) do show_confirm
+        if show_confirm
+            clear_panel!(panel_gl)
+            Label(panel_gl[1, 1],
+                "Plant $(state.idx) / $n ($(basename(state.paths[state.idx]))) already has saved results.\nOverwrite them with the current analysis?";
+                fontsize = 18, halign = :center, justification = :center)
+            btn_row = GridLayout(panel_gl[2, 1]; halign = :center)
+            btn_yes = Button(btn_row[1, 1];
+                            label = "Yes",
+                            buttoncolor = :crimson,
+                            buttoncolor_active = :firebrick,
+                            buttoncolor_hover = :firebrick,
+                            labelcolor = :white,
+                            labelcolor_active = :white,
+                            labelcolor_hover = :white)
+            btn_cancel = Button(btn_row[1, 2]; label = "Cancel")
+            on(btn_yes.clicks) do _
+                commit_result!(state, rv)
+                confirm_overwrite[] = false
+                (state.idx < n) && start_scan!(state.idx + 1)
+            end
+            on(btn_cancel.clicks) do _
+                confirm_overwrite[] = false
+            end
+        else
+            notify(active_tab)
         end
     end
 
@@ -981,7 +1042,7 @@ function romi_launch()
     fig = Figure(; size = (1500, 950), title = "Plant Phyllotaxis Analyser")
     root_gl = GridLayout(fig[1, 1])
     screen = Observable(:loading) # :loading, :busy, :ready
-    state = ROMIViewerState("", String[], 1, nothing, Dict{String, ROMIAnglesAndInternodes}())
+    state = ROMIViewerState("", String[], 1, nothing, Dict{String, ROMIResults}())
 
     function start_scan!(idx::Int)
         GC.gc()
@@ -993,7 +1054,18 @@ function romi_launch()
         @async begin
             try
                 dataset = run_and_load_colmap(path)
-                state.rv = ROMIViewer(dataset)
+                saved = get(state.results, plant_id(path), nothing)
+                if saved !== nothing
+                    # reopening an already-processed plant
+                    state.rv = ROMIViewer(dataset;
+                        bbox_params = saved.bbox_params,
+                        mask_params = saved.mask_params,
+                        vol_params = saved.vol_params,
+                        skel_params = saved.skel.params,
+                        skel = saved.skel)
+                else
+                    state.rv = ROMIViewer(dataset)
+                end
             catch err
                 @error "Failed to load scan $path" exception = (err, catch_backtrace())
                 state.rv = nothing
@@ -1009,7 +1081,12 @@ function romi_launch()
                 state.root_path = root_path
                 state.paths = valid_paths
                 load_results!(state)
-                start_scan!(1)
+                start_idx = findfirst(p -> !haskey(state.results, plant_id(p)), valid_paths)
+                if start_idx === nothing
+                    @warn "All $(length(valid_paths)) plants in this experiment already have saved results — opening the first for review."
+                    start_idx = 1
+                end
+                start_scan!(Int(start_idx))
             end
         elseif s == :busy
             Label(root_gl[1, 1],

@@ -1013,6 +1013,25 @@ mutable struct ROMISkeleton # mutable to add or remove tips
     # parameters used
     params::ROMISkeletonParams
 end
+function Base.copy(s::ROMISkeleton)
+    return ROMISkeleton(s.stem,
+                s.branch,
+                s.stem_curve,
+                s.branch_curve,
+                s.stem_root,
+                s.stem_top,
+                s.stem_top_id,
+                s.tip_ids,
+                s.tip_points,
+                s.branchpoints,
+                s.branchpoints_arclength,
+                s.vb,
+                s.u_root, 
+                s.jt_root,
+                s.u_stem,
+                s.u_branch,
+                s.params)
+end
 
 # convenient constructors
 function ROMISkeleton(vb::ROMIBinaryVolume, params::ROMISkeletonParams)

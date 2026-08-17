@@ -25,31 +25,36 @@ include("ROMISyntheticPlant.jl")
 export ROMIScan, ROMIFrame, ROMICamera
 export ROMIVolume, ROMISkeleton, ROMIAnglesAndInternodes
 export ROMIMaskParams, ROMIVolumeParams, ROMISkeletonParams, ROMIBboxParams
-export ROMIViewer, run_and_load_colmap, romi_launch
+export ROMIViewer, ROMIResults, run_and_load_colmap, romi_launch
 
 # Precompile workload for CPU pipeline & GLMakie plot recipes
 @setup_workload begin
     scan, vol_params, bbox_params = generate_synthetic_plant_scan(mktempdir())
-    fig = Figure(; size = (1500, 950))
-    gl = GridLayout(fig[1, 1])
-
     @compile_workload begin
-        rv = ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, verbose = false)
-        romi_mask_and_bbox!(rv, gl)
-        romi_volume!(rv, gl)
-        romi_skeleton!(rv, gl)
+        ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, verbose = false)
     end
 end
 
 # GPU warm-up: JIT-compiles CUDA kernels for runtime GPU execution
+# GLMakie Shader & Screen Warm-up
 function __init__()
-    (get(ENV, "ROMI_SKIP_WARMUP", "false") == "true") || return nothing
+    (get(ENV, "ROMI_SKIP_WARMUP", "false") == "true") && return nothing
     CUDA.functional() || return nothing
     try
         scan, vol_params, bbox_params = generate_synthetic_plant_scan(mktempdir())
-        ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, verbose = false)
+        rv = ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, verbose = false)
+        fig = Figure()
+        gl_mask = GridLayout(fig[1, 1])
+        gl_vol = GridLayout(fig[1, 2])
+        gl_skl = GridLayout(fig[1, 3])
+        romi_mask_and_bbox!(rv, gl_mask)
+        romi_volume!(rv, gl_vol)
+        romi_skeleton!(rv, gl_skl)
+        Makie.colorbuffer(fig; px_per_unit = 1)
+        Makie.second_resolve(fig, :gl_renderobject)
+        CUDA.reclaim()
     catch e
-        @warn "GPU kernel warm-up failed!" exception = (e, catch_backtrace())
+        @warn "GPU kernel & GLMakie warm-up failed!" exception = (e, catch_backtrace())
     end
     return nothing
 end
