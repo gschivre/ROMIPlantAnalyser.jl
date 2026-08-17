@@ -52,8 +52,13 @@ function run_and_load_colmap(project_dir::String;
         sparse_dir = joinpath(abs_project_dir, "sparse")
         rerun_colmap = (!isdir(sparse_dir)) || force_colmap
         (rerun_colmap && rm_colmapdb) && rm(joinpath(abs_project_dir, "colmap", "$(plant_id)_colmap_database.db"); force = true)
-        ROMIcolmap_script = joinpath(pkgdir(@__MODULE__), "src", "ROMIcolmap.jl")
-        run(`$(Base.julia_cmd()) --project=$(Base.active_project()) $ROMIcolmap_script $project_dir $rerun_colmap $use_GPU $xyz_error`)
+        pkg_env = pkgdir(@__MODULE__)
+        ROMIcolmap_script = joinpath(pkg_env, "src", "ROMIcolmap.jl")
+        cmd = addenv(
+            `$(Base.julia_cmd()) --project=$pkg_env $ROMIcolmap_script $project_dir $rerun_colmap $use_GPU $xyz_error`,
+            "ROMI_SKIP_WARMUP" => "true"
+        )
+        run(cmd)
     end
     dataset = deserialize(jls_file)
     return dataset

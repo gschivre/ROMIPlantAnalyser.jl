@@ -1,16 +1,10 @@
 using GeometryBasics, Serialization
-
-# Initialize Python dependencies via PythonCall
-ENV["JULIA_CONDAPKG_BACKEND"] = "Null"
-ENV["JULIA_PYTHONCALL_EXE"] = "/home/admingeoffrey/Documents/Datas/Python/Miniconda3/envs/pycolmap/bin/python3"
-ENV["JULIA_CONDAPKG_EXE"] = "/home/admingeoffrey/Documents/Datas/Python/Miniconda3/envs/pycolmap/bin"
 using PythonCall
 const pycolmap = pyimport("pycolmap")
 const np = pyimport("numpy")
 
 # load ROMI types as this code will be launch on a separate thread
-include("ROMITypes.jl")
-using .ROMITypes
+using ROMIPlantAnalyser: ROMIScan, ROMIFrame, ROMICamera
 
 """
     write_image_pairs(dataset::ROMIScan)
@@ -83,6 +77,9 @@ end
 Run colmap and align the colmap model to approximate pose.
 """
 function run_colmap(dataset::ROMIScan; use_GPU::Bool = true)
+    if isnothing(Sys.which("colmap"))
+        error("`colmap` executable was not found in system PATH. Please ensure COLMAP is installed and available in terminal.")
+    end
     @info "Starting colmap CLI workflow for $(dataset.plant_id)"
     
     # Feature Extraction

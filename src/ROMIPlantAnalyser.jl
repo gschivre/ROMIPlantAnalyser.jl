@@ -43,6 +43,7 @@ end
 
 # GPU warm-up: JIT-compiles CUDA kernels for runtime GPU execution
 function __init__()
+    (get(ENV, "ROMI_SKIP_WARMUP", "false") == "true") || return nothing
     CUDA.functional() || return nothing
     try
         scan, vol_params, bbox_params = generate_synthetic_plant_scan(mktempdir())
