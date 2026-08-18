@@ -260,6 +260,17 @@ struct ROMIResults
     skel::ROMISkeleton # save the whole skeleton not just its parameters
 end
 
+"""
+    load_results(path::String)
+
+Open saved results as a Dict{String, ROMIResults}. `path` should be either a direct path to a `*_ROMIAnglesAndInternodes.jls` 
+file or to a ROMI experiment folder.
+"""
+function load_results(path::String)
+    f = (isdir(path) ? joinpath(path, basename(rstrip(path, ('/', '\\')) * "_ROMIAnglesAndInternodes.jls")) : path)
+    return (isfile(f) ? deserialize(f) : Dict{String, ROMIResults}())
+end
+
 mutable struct ROMIViewerState
     root_path::String
     paths::Vector{String}
