@@ -238,7 +238,9 @@ function ROMIViewer(data::ROMIScan;
                     mask_params::ROMIMaskParams = ROMIMaskParams(),
                     vol_params::ROMIVolumeParams = ROMIVolumeParams(bbox = initialize_bbox(data, bbox_params), λ = 30.0),
                     skel_params::ROMISkeletonParams = ROMISkeletonParams(),
-                    skel::Union{Nothing, ROMISkeleton} = nothing,
+                    stem_root::Union{Nothing, Int} = nothing,
+                    stem_top::Union{Nothing, Int} = nothing,
+                    branch_tips::Union{Nothing, Vector{Int}} = nothing,
                     verbose::Bool = true)
     verbose && @info "Initializing viewer data..."
     with_logger(NullLogger()) do
@@ -247,7 +249,13 @@ function ROMIViewer(data::ROMIScan;
         mf = ROMIMaskedFrames(data, mask_params)
         vol = ROMIVolume(mf, vol_params)
         msh = makemesh(vol, skel_params.t)
-        skl = (isnothing(skel) ? ROMISkeleton(vol, skel_params) : copy(skel))
+        skl = ROMISkeleton(vol, skel_params)
+        
+        # reconstruct skeleton from stem root/top and branch tips
+        isnothing(stem_root) || update_stem_root!(skl, stem_root)
+        isnothing(stem_top) || update_stem_top!(skl, stem_top)
+        isnothing(branch_tips) || update_fruit_tips!(skl, branch_tips)
+
         ROMIViewer(data, bbox_params, vol_params.voxel_size, mf, vol, msh, skl)
     end
 end
@@ -257,7 +265,13 @@ struct ROMIResults
     bbox_params::ROMIBboxParams
     mask_params::ROMIMaskParams
     vol_params::ROMIVolumeParams
-    skel::ROMISkeleton # save the whole skeleton not just its parameters
+    skel_params::ROMISkeletonParams
+
+    # to reconstruct the full skeleton we need to save stem root/top and branch tips
+    # this reduce the results file size compared to saving the whole ROMISkeleton instance!
+    stem_root::Int
+    stem_top::Int
+    branch_tips::Vector{Int}
 end
 
 """
@@ -295,7 +309,10 @@ function commit_result!(state::ROMIViewerState, rv::ROMIViewer)
         copy(rv.bbox_params),
         copy(rv.mf.params),
         copy(rv.vol.params),
-        copy(rv.skl)
+        copy(rv.skl.params),
+        rv.skl.vb.root_id,
+        rv.skl.stem_top_id,
+        copy(rv.skl.tip_ids)
     )
     state.results[id] = result
     res_file = results_file(state)
@@ -406,14 +423,19 @@ function romi_mask_and_bbox!(rv::ROMIViewer, gl::GridLayout)
         else
             mask_params.l = $lorlh / 255
         end
-        get_feat($img_obs, mask_params)
+        ($(feat_prev.active) ? get_feat($img_obs, mask_params) : similar(Matrix{Gray{N0f8}}, axes($img_obs)))
     end
 
     mask_obs = @lift begin
         mask_params.t = $t / 255
         mask_params.m = $m
         mask_params.d = $d
-        get_mask($feat_obs, mask_params)
+        if $(mask_prev.active)
+            $feat_obs = get_feat($img_obs, mask_params)
+            return get_mask($feat_obs, mask_params)
+        else
+            return similar(BitMatrix, axes($feat_obs))
+        end
     end
 
     bbox_obs = @lift begin
@@ -928,6 +950,7 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
     active_tab = Observable{Int}(1)
     save_status = Observable("")
     confirm_overwrite = Observable(false)
+    prev_or_next = Observable("")
 
     # Renders the full navigation, tab header, and active tab content
     function render_main_ui()
@@ -943,14 +966,21 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
             next_btn = Button(nav_bar[1, 3], label = "Next →")
             
             on(prev_btn.clicks) do _
-                (state.idx > 1) && start_scan!(state.idx - 1)
-            end
-            on(next_btn.clicks) do _
                 if haskey(state.results, plant_id(state.paths[state.idx]))
+                    prev_or_next[] = "prev"
                     confirm_overwrite[] = true
                 else
                     commit_result!(state, rv)
-                    (state.idx < n) && start_scan!(state.idx + 1)
+                    start_scan!(mod1(state.idx - 1, n))
+                end
+            end
+            on(next_btn.clicks) do _
+                if haskey(state.results, plant_id(state.paths[state.idx]))
+                    prev_or_next[] = "next"
+                    confirm_overwrite[] = true
+                else
+                    commit_result!(state, rv)
+                    start_scan!(mod1(state.idx + 1, n))
                 end
             end
             
@@ -1061,11 +1091,21 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
             on(btn_yes.clicks) do _
                 commit_result!(state, rv)
                 confirm_overwrite[] = false
-                (state.idx < n) && start_scan!(state.idx + 1)
+                if prev_or_next[] == "prev"
+                    start_scan!(mod1(state.idx - 1, n))
+                else
+                    start_scan!(mod1(state.idx + 1, n))
+                end
+                prev_or_next[] = ""
             end
             on(btn_no.clicks) do _
                 confirm_overwrite[] = false
-                (state.idx < n) && start_scan!(state.idx + 1)
+                if prev_or_next[] == "prev"
+                    start_scan!(mod1(state.idx - 1, n))
+                else
+                    start_scan!(mod1(state.idx + 1, n))
+                end
+                prev_or_next[] = ""
             end
             on(btn_cancel.clicks) do _
                 confirm_overwrite[] = false
@@ -1107,8 +1147,10 @@ function romi_launch()
                         bbox_params = saved.bbox_params,
                         mask_params = saved.mask_params,
                         vol_params = saved.vol_params,
-                        skel_params = saved.skel.params,
-                        skel = saved.skel)
+                        skel_params = saved.skel_params,
+                        stem_root = saved.stem_root,
+                        stem_top = saved.stem_top,
+                        branch_tips = saved.branch_tips)
                 else
                     state.rv = ROMIViewer(dataset)
                 end

@@ -1282,6 +1282,42 @@ function update_stem_top!(s::ROMISkeleton, node_id::Int)
 end
 
 """
+    update_fruit_tips!(s::ROMISkeleton, node_ids::Vector{Int})
+
+Replace existing branches using the given branch tips.
+"""
+function update_fruit_tips!(s::ROMISkeleton, node_ids::Vector{Int})
+    (sort(s.tip_ids) == sort(node_ids)) && return nothing
+    s.tip_ids = node_ids
+    s.tip_points = s.vb.vox_grid[s.vb.coords[node_ids]]
+    
+    # resize branch containers
+    n_tips = length(s.tip_ids)
+    resize!(s.branch, n_tips)
+    resize!(s.branch_curve, n_tips)
+    resize!(s.branchpoints, n_tips)
+    resize!(s.branchpoints_arclength, n_tips)
+
+    # recompute branch curves
+    Threads.@threads for i in eachindex(s.tip_ids)
+        _recompute_branch!(s, i)
+    end
+
+    # sort fruits by branchpoint arc length
+    if length(s.branchpoints) > 1
+        perm = sortperm(s.branchpoints_arclength)
+        permute!(s.branch, perm)
+        permute!(s.branch_curve, perm)
+        permute!(s.tip_ids, perm)
+        permute!(s.tip_points, perm)
+        permute!(s.branchpoints, perm)
+        permute!(s.branchpoints_arclength, perm)
+    end
+
+    return nothing
+end
+
+"""
     add_fruit_tip!(s::ROMISkeleton, node_id::Int)
 
 Add a new fruit tip, extracting its branch against the current stem via the already-built distance field.

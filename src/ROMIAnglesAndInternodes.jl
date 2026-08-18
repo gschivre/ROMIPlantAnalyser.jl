@@ -94,6 +94,7 @@ struct ROMIAnglesAndInternodes
 
     # divergence angles in °
     div_angles::Vector{Float64}
+    orientation::Symbol
 end
 
 # constructor from ROMISkeleton
@@ -109,10 +110,11 @@ function ROMIAnglesAndInternodes(s::ROMISkeleton)
     end
 
     # divergence angles
-    if stem_chirality(azimuth) == :cw
+    orientation = stem_chirality(azimuth)
+    if orientation == :cw
         div_angles = rad2deg.(mod2pi.(-diff(azimuth)))
     else # ambiguous case default to :ccw
         div_angles = rad2deg.(mod2pi.(diff(azimuth)))
     end
-    return ROMIAnglesAndInternodes(polar, azimuth, internodes, div_angles)
+    return ROMIAnglesAndInternodes(polar, azimuth, internodes, div_angles, orientation)
 end
