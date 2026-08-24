@@ -11,7 +11,7 @@ using GeometryBasics, JSON, Serialization, Logging
 using CUDA, Adapt, StaticArrays
 using LinearAlgebra, Krylov, LinearOperators
 using DataStructures, MarchingCubes
-using Observables, GLMakie, Images, ImageMorphology
+using GLMakie, Images, ImageMorphology
 using StatsBase, ForwardDiff
 using PrecompileTools: @setup_workload, @compile_workload
 
