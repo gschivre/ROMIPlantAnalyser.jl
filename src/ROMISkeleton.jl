@@ -485,7 +485,7 @@ end
 
 # callable API
 
-# Position C(s)
+# Position C(t)
 function (curve::NWSmoothedCurve{F})(t) where {F}
     lo, hi = _window(curve.padded_t, t, curve.trunc_radius)
     S0, S1 = _accumulate(curve.padded_points, curve.padded_t, curve.inv_2σ²,
@@ -504,7 +504,7 @@ function _pos_and_raw_derivative(curve::NWSmoothedCurve{F}, t) where {F}
 end
 derivative(curve::NWSmoothedCurve, t) = _pos_and_raw_derivative(curve, t)[2]
 
-# Unit Tangent T(s) = dC/ds
+# Unit Tangent T(t) = dC/ds = C'(t) / ||C'(t)||
 function tangent(curve::NWSmoothedCurve, t)
     d = derivative(curve, t)
     return d / sqrt(sum(abs2, d))
@@ -981,6 +981,12 @@ function findtruncatedtips(vb::ROMIBinaryVolume; min_voxels::Int = 3)
     return tips
 end
 
+# tip ID struct to store an optional intermediary point
+struct ROMITipID
+    node_id::Int
+    int_node_id::Int # node ID of the stem target
+end
+
 mutable struct ROMISkeleton # mutable to add or remove tips
     # raw stem and branches (define at the voxel scale)
     stem::Vector{Int}
@@ -996,7 +1002,7 @@ mutable struct ROMISkeleton # mutable to add or remove tips
     stem_top_id::Int
 
     # fruits tips and branch points
-    tip_ids::Vector{Int}
+    tip_ids::Vector{ROMITipID}
     tip_points::Vector{Point3d}
     branchpoints::Vector{Point3d}
     branchpoints_arclength::Vector{Float64}
@@ -1070,7 +1076,7 @@ function ROMISkeleton(vb::ROMIBinaryVolume, params::ROMISkeletonParams)
     stem_id = stem_top.node_id
     stem_point = vb.vox_grid[stem_top.node_idx]
     tip_points = vb.vox_grid[map(m -> m.node_idx, t_max)]
-    tip_ids = map(m -> m.node_id, t_max)
+    tip_ids = map(m -> ROMITipID(m.node_id, 0), t_max)
 
     # extract main stem center line via conductance weighted distance field
     u_stem = dijkstra_shortest_path(vb, vb.root_id; weighted = true) # flux travel time
@@ -1140,7 +1146,13 @@ Base.show(io::IO, s::ROMISkeleton) = print(io, "ROMISkeleton with ", length(s.br
 # shared logic for (re)deriving one branch against the current stem
 function _recompute_branch!(s::ROMISkeleton, i::Int)
     vb = s.vb
-    raw_branch = reverse!(extract_shortest_path(s.u_branch, s.tip_ids[i]))
+    if s.tip_ids[i].int_node_id == 0
+        raw_branch = reverse!(extract_shortest_path(s.u_branch, s.tip_ids[i].node_id))
+    else
+        # need to recompute a shortest path!
+        u_int = dijkstra_shortest_path(vb, s.tip_ids[i].int_node_id; weighted = true)
+        raw_branch = reverse!(extract_shortest_path(u_int, s.tip_ids[i].node_id))
+    end
     raw_branchpoint = vb.vox_grid[vb.coords[raw_branch[1]]]
 
     # find where the junction point maps onto the smoothed stem
@@ -1202,7 +1214,7 @@ function update_stem_root!(s::ROMISkeleton, node_id::Int)
         append!(t_max, t_trunc)
     end
     s.tip_points = vb.vox_grid[map(m -> m.node_idx, t_max)]
-    s.tip_ids = map(m -> m.node_id, t_max)
+    s.tip_ids = map(m -> ROMITipID(m.node_id, 0), t_max)
 
     # extract main stem center line via conductance weighted distance field
     s.u_stem = dijkstra_shortest_path(vb, vb.root_id; weighted = true) # flux travel time
@@ -1282,14 +1294,14 @@ function update_stem_top!(s::ROMISkeleton, node_id::Int)
 end
 
 """
-    update_fruit_tips!(s::ROMISkeleton, node_ids::Vector{Int})
+    update_fruit_tips!(s::ROMISkeleton, tips::Vector{ROMITipID})
 
 Replace existing branches using the given branch tips.
 """
-function update_fruit_tips!(s::ROMISkeleton, node_ids::Vector{Int})
-    (sort(s.tip_ids) == sort(node_ids)) && return nothing
-    s.tip_ids = node_ids
-    s.tip_points = s.vb.vox_grid[s.vb.coords[node_ids]]
+function update_fruit_tips!(s::ROMISkeleton, tips::Vector{ROMITipID})
+    (sort(s.tip_ids; by = t -> t.node_id) == sort(tips; by = t -> t.node_id)) && return nothing
+    s.tip_ids = tips
+    s.tip_points = s.vb.vox_grid[s.vb.coords[map(t -> t.node_id, tips)]]
     
     # resize branch containers
     n_tips = length(s.tip_ids)
@@ -1318,22 +1330,29 @@ function update_fruit_tips!(s::ROMISkeleton, node_ids::Vector{Int})
 end
 
 """
-    add_fruit_tip!(s::ROMISkeleton, node_id::Int)
+    add_fruit_tip!(s::ROMISkeleton, tip::ROMITipID)
 
 Add a new fruit tip, extracting its branch against the current stem via the already-built distance field.
 """
-function add_fruit_tip!(s::ROMISkeleton, node_id::Int)
-    (node_id in s.tip_ids) && return nothing # already present
-    push!(s.tip_ids, node_id)
-    push!(s.tip_points, s.vb.vox_grid[s.vb.coords[node_id]])
-    
-    # resize branch containers
-    n_tips = length(s.tip_ids)
-    resize!(s.branch, n_tips)
-    resize!(s.branch_curve, n_tips)
-    resize!(s.branchpoints, n_tips)
-    resize!(s.branchpoints_arclength, n_tips)
-    _recompute_branch!(s, length(s.tip_ids))
+function add_fruit_tip!(s::ROMISkeleton, tip::ROMITipID)
+    (tip in s.tip_ids) && return nothing # already present
+
+    idx = findfirst(t -> t.node_id == tip.node_id, s.tip_ids)
+    if !isnothing(idx) # tip exist but as not the same intermediary target
+        s.tip_ids[idx] = tip # update inplace
+        _recompute_branch!(s, idx)
+    else
+        push!(s.tip_ids, tip)
+        push!(s.tip_points, s.vb.vox_grid[s.vb.coords[tip.node_id]])
+        
+        # resize branch containers
+        n_tips = length(s.tip_ids)
+        resize!(s.branch, n_tips)
+        resize!(s.branch_curve, n_tips)
+        resize!(s.branchpoints, n_tips)
+        resize!(s.branchpoints_arclength, n_tips)
+        _recompute_branch!(s, length(s.tip_ids))
+    end
 
     # sort fruits by branchpoint arc length
     if length(s.branchpoints) > 1
@@ -1355,7 +1374,7 @@ end
 Remove a fruit tip and its branch by node id.
 """
 function remove_fruit_tip!(s::ROMISkeleton, node_id::Int)
-    i = findfirst(==(node_id), s.tip_ids)
+    i = findfirst(==(node_id), map(t -> t.node_id, s.tip_ids))
     (i === nothing) && return nothing
     deleteat!(s.tip_ids, i)
     deleteat!(s.tip_points, i)
@@ -1475,7 +1494,10 @@ function update_threshold!(s::ROMISkeleton, v, t::Real)
     s.stem_top_id = stem_top.node_id
     s.stem_top = vb.vox_grid[stem_top.node_idx]
     s.tip_points = vb.vox_grid[map(m -> m.node_idx, t_max)]
-    s.tip_ids = map(m -> m.node_id, t_max)
+    
+    # Preserve any existing ROMITipIDs (and their intermediary targets)
+    existing_tips = Dict(t.node_id => t for t in s.tip_ids)
+    s.tip_ids = map(m -> get(existing_tips, m.node_id, ROMITipID(m.node_id, 0)), t_max)
 
     # extract main stem center line via conductance weighted distance field
     s.u_stem = dijkstra_shortest_path(vb, vb.root_id; weighted = true) # flux travel time
@@ -1546,7 +1568,10 @@ function update_prominence!(s::ROMISkeleton, h::Real)
         append!(t_max, t_trunc)
     end
     s.tip_points = vb.vox_grid[map(m -> m.node_idx, t_max)]
-    s.tip_ids = map(m -> m.node_id, t_max)
+
+    # Preserve any existing ROMITipIDs (and their intermediary targets)
+    existing_tips = Dict(t.node_id => t for t in s.tip_ids)
+    s.tip_ids = map(m -> get(existing_tips, m.node_id, ROMITipID(m.node_id, 0)), t_max)
 
     # resize branch containers
     n_tips = length(s.tip_ids)

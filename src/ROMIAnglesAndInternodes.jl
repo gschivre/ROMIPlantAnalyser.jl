@@ -203,6 +203,9 @@ function stem_chirality(θ::Vector{T}) where {T <: AbstractFloat}
 end
 
 struct ROMIAnglesAndInternodes
+    # fruits length in mm
+    lengths::Vector{Float64}
+
     # angles in radian
     polar::Vector{Float64}
     azimuth::Vector{Float64}
@@ -225,6 +228,9 @@ end
 function ROMIAnglesAndInternodes(s::ROMISkeleton)
     voxel_size = Float64(s.vb.voxel_size)
 
+    # fruits length
+    flen = map(b -> b.L_smooth, s.branch_curve)
+
     # internodes
     internodes = diff(s.branchpoints_arclength)
 
@@ -236,7 +242,7 @@ function ROMIAnglesAndInternodes(s::ROMISkeleton)
     se_azimuth = zeros(n)
     cov_θϕ = zeros(n)
     flagged = falses(n)
-    for i in eachindex(s.branchpoints)
+    Threads.@threads for i in eachindex(s.branchpoints)
         res = emergence_angles(s.branch_curve[i], s.branchpoints_arclength[i], s.stem_curve, voxel_size)
         polar[i] = res.polar
         azimuth[i] = res.azimuth
@@ -253,5 +259,5 @@ function ROMIAnglesAndInternodes(s::ROMISkeleton)
     else # ambiguous case default to :ccw
         div_angles = rad2deg.(mod2pi.(diff(azimuth)))
     end
-    return ROMIAnglesAndInternodes(polar, azimuth, internodes, div_angles, orientation, se_polar, se_azimuth, cov_θϕ, flagged)
+    return ROMIAnglesAndInternodes(flen, polar, azimuth, internodes, div_angles, orientation, se_polar, se_azimuth, cov_θϕ, flagged)
 end

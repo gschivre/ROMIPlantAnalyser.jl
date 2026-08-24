@@ -240,7 +240,7 @@ function ROMIViewer(data::ROMIScan;
                     skel_params::ROMISkeletonParams = ROMISkeletonParams(),
                     stem_root::Union{Nothing, Int} = nothing,
                     stem_top::Union{Nothing, Int} = nothing,
-                    branch_tips::Union{Nothing, Vector{Int}} = nothing,
+                    branch_tips::Union{Nothing, Vector{ROMITipID}} = nothing,
                     verbose::Bool = true)
     verbose && @info "Initializing viewer data..."
     with_logger(NullLogger()) do
@@ -271,7 +271,7 @@ struct ROMIResults
     # this reduce the results file size compared to saving the whole ROMISkeleton instance!
     stem_root::Int
     stem_top::Int
-    branch_tips::Vector{Int}
+    branch_tips::Vector{ROMITipID}
 end
 
 """
@@ -668,32 +668,38 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     mode = Observable(0) # 0: view, 1: add, 2: delete, 3: top, or 4: root
     mouse_circle = Observable(false) # to draw helper circle arround mouse
     mouse_rad = Observable(0)
+    int_id = Observable(0) # intermediary point ID
     on(mode) do m
         if m == 1
-            mode_lbl.text[] = "Mode: ADDING (Alt + Click to validate)"
+            mode_lbl.text[] = "Mode: ADDING (Alt + Click to validate\n\tCtrl + Alt + Click to add stem target point)"
             mode_lbl.color[] = parse(Colorant, :dodgerblue)
             mouse_circle[] = true
             mouse_rad[] = 20
+            int_id[] = 0
         elseif m == 2
             mode_lbl.text[] = "Mode: DELETING (Alt + Click to validate)"
             mode_lbl.color[] = parse(Colorant, :crimson)
             mouse_circle[] = true
             mouse_rad[] = 40
+            int_id[] = 0
         elseif m == 3
             mode_lbl.text[] = "Mode: TOP (Alt + Click to validate)"
             mode_lbl.color[] = parse(Colorant, :olive)
             mouse_circle[] = true
             mouse_rad[] = 20
+            int_id[] = 0
         elseif m == 4
             mode_lbl.text[] = "Mode: ROOT (Alt + Click to validate)"
             mode_lbl.color[] = parse(Colorant, :sienna)
             mouse_circle[] = true
             mouse_rad[] = 20
+            int_id[] = 0
         else
             mode_lbl.text[] = "Mode: VIEWING"
             mode_lbl.color[] = parse(Colorant, :darkgray)
             mouse_circle[] = false
             mouse_rad[] = 0
+            int_id[] = 0
         end
     end
 
@@ -744,7 +750,7 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     end
     lines!(ax, stem_obs; color = :darkgreen, linewidth = 3)
     lines!(ax, branch_obs; color = :orange, linewidth = 2)
-    tips_plot = scatter!(ax, tips_obs; markersize = 0.03, markerspace = :data, color = :coral)   
+    tips_plot = scatter!(ax, tips_obs; markersize = 0.03, markerspace = :data, color = :coral)
 
     # Hover Callback (Updates preview line/point while mouse moves)
     node_id = Observable(0)
@@ -757,7 +763,12 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
             idx = pick_from(Makie.get_scene(ax), mp, boundary_plot; range = 10)
             if idx !== nothing
                 node_id[] = vb.idmap[boundary_coords[idx]]
-                raw = reverse!(extract_shortest_path(s.u_branch, node_id[]))
+                if int_id[] == 0
+                    raw = reverse!(extract_shortest_path(s.u_branch, node_id[]))
+                else
+                    u_int = dijkstra_shortest_path(vb, int_id[]; weighted = true)
+                    raw = reverse!(extract_shortest_path(u_int, node_id[]))
+                end
                 preview_pt_obs[] = [boundary_pts[idx]]
                 preview_line_obs[] = Point3f.(vb.vox_grid[vb.coords[raw]])
                 preview_color[] = parse(Colorant, :dodgerblue)
@@ -770,7 +781,7 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
         elseif m == 2
             idx = pick_from(Makie.get_scene(ax), mp, tips_plot; range = 20)
             if idx !== nothing
-                node_id[] = s.tip_ids[idx]
+                node_id[] = s.tip_ids[idx].node_id
                 preview_pt_obs[] = [Point3f(s.tip_points[idx])]
                 preview_line_obs[] = Point3f.(sample_uniform(s.branch_curve[idx], curve_res))
                 preview_color[] = parse(Colorant, :crimson)
@@ -809,23 +820,31 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
             (id == 0) && return Consume(false)
             m = to_value(mode)
             if m == 1
-                add_fruit_tip!(s, id)
-                tips_obs[] = Point3f.(s.tip_points)
-                branchs = map(c -> sample_uniform(c, curve_res), s.branch_curve)
-                branch_obs[] = _build_nan_branches(branchs)
-                branch_count_lbl.text[] = "Branches: $(length(s.branchpoints))"
+                if Keyboard.left_control in events(ax).keyboardstate
+                    int_id[] = reverse!(extract_shortest_path(s.u_branch, id))[1]
+                    return Consume(true)
+                else
+                    add_fruit_tip!(s, ROMITipID(id, int_id[]))
+                    tips_obs[] = Point3f.(s.tip_points)
+                    branchs = map(c -> sample_uniform(c, curve_res), s.branch_curve)
+                    branch_obs[] = _build_nan_branches(branchs)
+                    branch_count_lbl.text[] = "Branches: $(length(s.branchpoints))"
+                    return Consume(true)
+                end
             elseif m == 2
                 remove_fruit_tip!(s, id)
                 tips_obs[] = Point3f.(s.tip_points)
                 branchs = map(c -> sample_uniform(c, curve_res), s.branch_curve)
                 branch_obs[] = _build_nan_branches(branchs)
                 branch_count_lbl.text[] = "Branches: $(length(s.branchpoints))"
+                return Consume(true)
             elseif m == 3
                 update_stem_top!(s, id)
                 stem_obs[] = Point3f.(sample_uniform(s.stem_curve, curve_res))
                 tips_obs[] = Point3f.(s.tip_points)
                 branchs = map(c -> sample_uniform(c, curve_res), s.branch_curve)
                 branch_obs[] = _build_nan_branches(branchs)
+                return Consume(true)
             elseif m == 4
                 update_stem_root!(s, id)
                 stem_obs[] = Point3f.(sample_uniform(s.stem_curve, curve_res))
@@ -833,6 +852,7 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
                 branchs = map(c -> sample_uniform(c, curve_res), s.branch_curve)
                 branch_obs[] = _build_nan_branches(branchs)
                 branch_count_lbl.text[] = "Branches: $(length(s.branchpoints))"
+                return Consume(true)
             end
         end
         return Consume(false)
@@ -841,6 +861,17 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     # Hover previews
     scatter!(ax, preview_pt_obs; markersize = 0.03, markerspace = :data, color = preview_color)
     lines!(ax, preview_line_obs; color = preview_color, linewidth = 2.5, linestyle = :dash)
+
+    # intermediary point
+    int_point = @lift begin
+        if $int_id == 0
+            return Point3f[]
+        else
+            raw_point = vb.vox_grid[vb.coords[$int_id]]
+            return [Point3f(raw_point)]
+        end
+    end
+    scatter!(ax, int_point; markersize = 0.03, markerspace = :data, color = :firebrick)
 
     # mouse hover circle
     scene = Makie.get_scene(Makie.get_top_parent(gl))
@@ -875,7 +906,7 @@ function romi_data_loader!(on_start::Function, fig::Figure, gl::GridLayout)
         width = 400
     )
     drop_gl = GridLayout(gl[1, 1]; alignmode = Outside(30, 30, 30, 30), tellwidth = true)
-    Label(drop_gl[1, 1], status_text, word_wrap = true, tellwidth = true)
+    Label(drop_gl[1, 1], status_text; fontsize = 18, word_wrap = true, tellwidth = true)
 
     # Start Button
     btn = Button(

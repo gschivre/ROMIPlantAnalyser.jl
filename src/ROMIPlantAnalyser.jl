@@ -11,7 +11,7 @@ using GeometryBasics, JSON, Serialization, Logging
 using CUDA, Adapt, StaticArrays
 using LinearAlgebra, Krylov, LinearOperators
 using DataStructures, MarchingCubes
-using GLMakie, Images, ImageMorphology
+using Observables, GLMakie, Images, ImageMorphology
 using StatsBase, ForwardDiff
 using PrecompileTools: @setup_workload, @compile_workload
 
@@ -32,7 +32,7 @@ export ROMIViewer, ROMIResults, run_and_load_colmap, load_results, romi_launch
 @setup_workload begin
     scan, vol_params, bbox_params = generate_synthetic_plant_scan(mktempdir())
     @compile_workload begin
-        ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, verbose = false)
+        ROMIAnglesAndInternodes(ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, verbose = false).skl)
     end
 end
 
