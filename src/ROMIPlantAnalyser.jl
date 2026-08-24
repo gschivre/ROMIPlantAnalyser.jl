@@ -11,7 +11,8 @@ using GeometryBasics, JSON, Serialization, Logging
 using CUDA, Adapt, StaticArrays
 using LinearAlgebra, Krylov, LinearOperators
 using DataStructures, MarchingCubes
-using GLMakie, Images, ImageMorphology, StatsBase
+using GLMakie, Images, ImageMorphology
+using StatsBase, ForwardDiff
 using PrecompileTools: @setup_workload, @compile_workload
 
 include("ROMITypes.jl")

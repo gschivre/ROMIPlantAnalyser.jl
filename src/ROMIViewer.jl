@@ -431,7 +431,9 @@ function romi_mask_and_bbox!(rv::ROMIViewer, gl::GridLayout)
         mask_params.m = $m
         mask_params.d = $d
         if $(mask_prev.active)
-            $feat_obs = get_feat($img_obs, mask_params)
+            if !$(feat_prev.active)
+                $feat_obs = get_feat($img_obs, mask_params)
+            end
             return get_mask($feat_obs, mask_params)
         else
             return similar(BitMatrix, axes($feat_obs))
@@ -1138,8 +1140,17 @@ function romi_launch()
         screen[] = :busy
         notify(screen)
         @async begin
+            local dataset
             try
-                dataset = run_and_load_colmap(path)
+                try
+                    dataset = run_and_load_colmap(path)
+                catch # try to not use the GPU
+                    dataset = run_and_load_colmap(path; force_colmap = true, rm_colmapdb = true, use_GPU = false)
+                end
+            catch err
+                @error "Failed to load scan $path" exception = (err, catch_backtrace())
+                state.rv = nothing
+            else
                 saved = get(state.results, plant_id(path), nothing)
                 if saved !== nothing
                     # reopening an already-processed plant
@@ -1154,11 +1165,8 @@ function romi_launch()
                 else
                     state.rv = ROMIViewer(dataset)
                 end
-            catch err
-                @error "Failed to load scan $path" exception = (err, catch_backtrace())
-                state.rv = nothing
+                screen[] = :ready
             end
-            screen[] = :ready
         end
     end
 
