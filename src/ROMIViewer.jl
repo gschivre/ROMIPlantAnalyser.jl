@@ -204,7 +204,14 @@ end
 
 # recursive layout cleaner
 function clear_panel!(gl::GridLayout)
-    clear!(x) = delete!(x)
+    function clear!(x)
+        try
+            empty!(x)
+        catch
+        finally
+            delete!(x)
+        end
+    end
     function clear!(x::GridLayout)
         for el in contents(x)
             clear!(el)
@@ -212,6 +219,8 @@ function clear_panel!(gl::GridLayout)
     end
     clear!(gl)
     Makie.trim!(gl)
+    GC.gc()
+    return nothing
 end
 
 mutable struct ROMIViewer
@@ -258,6 +267,21 @@ function ROMIViewer(data::ROMIScan;
 
         ROMIViewer(data, bbox_params, vol_params.voxel_size, mf, vol, msh, skl)
     end
+end
+
+# Recursively free any CuArrays in the volume struct
+function free!(vol::ROMIVolume)
+    for fieldname in fieldnames(typeof(vol))
+        val = getfield(vol, fieldname)
+        if val isa CUDA.CuArray
+            CUDA.unsafe_free!(val)
+        end
+    end
+    return nothing
+end
+function free!(rv::ROMIViewer)
+    free!(rv.vol)
+    return nothing
 end
 
 struct ROMIResults
@@ -874,10 +898,16 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     scatter!(ax, int_point; markersize = 0.03, markerspace = :data, color = :firebrick)
 
     # mouse hover circle
-    scene = Makie.get_scene(Makie.get_top_parent(gl))
-    scatter!(scene, events(scene).mouseposition;
+    #scene = Makie.get_scene(Makie.get_top_parent(gl))
+    mouse_pos_local = @lift begin
+        mp = $(events(ax).mouseposition)
+        vp = $(ax.scene.viewport)
+        Point2f(mp[1] - vp.origin[1], mp[2] - vp.origin[2])
+    end
+    scatter!(ax, mouse_pos_local;
                 markersize = mouse_rad,
                 marker = :circle,
+                space = :pixel,
                 color = (:yellow, 0.7),
                 transparency = true,
                 visible = mouse_circle)
@@ -1164,8 +1194,12 @@ function romi_launch()
     state = ROMIViewerState("", String[], 1, nothing, Dict{String, ROMIResults}())
 
     function start_scan!(idx::Int)
+        if state.rv !== nothing
+            free!(state.rv)
+            state.rv = nothing
+        end
         GC.gc()
-        CUDA.reclaim()
+        CUDA.functional() && CUDA.reclaim()
         state.idx = idx
         path = state.paths[idx]
         screen[] = :busy
