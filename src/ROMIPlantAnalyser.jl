@@ -26,7 +26,7 @@ include("ROMISyntheticPlant.jl")
 export ROMIScan, ROMIFrame, ROMICamera
 export ROMIVolume, ROMISkeleton, ROMIAnglesAndInternodes
 export ROMIMaskParams, ROMIVolumeParams, ROMISkeletonParams, ROMIBboxParams
-export ROMIViewer, ROMIResults, run_and_load_colmap, load_results, romi_launch
+export ROMIViewer, ROMIResults, run_and_load_colmap, load_results, export_results, romi_launch
 
 # Precompile workload for CPU pipeline
 @setup_workload begin

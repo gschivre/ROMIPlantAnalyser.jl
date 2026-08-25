@@ -309,6 +309,40 @@ function load_results(path::String)
     return (isfile(f) ? deserialize(f) : Dict{String, ROMIResults}())
 end
 
+"""
+    export_results(path::String)
+
+Export ROMIResults to a .csv and .json files. `path` should be either a direct path to a `*_ROMIAnglesAndInternodes.jls` 
+file or to a ROMI experiment folder.
+"""
+function export_results(path::String)
+    # load results
+    res = load_results(path)
+    f = (isdir(path) ? joinpath(path, basename(rstrip(path, ('/', '\\')) * "_ROMIAnglesAndInternodes.jls")) : path)
+    csv_file = replace(f, ".jls" => ".csv")
+    json_file = replace(f, ".jls" => ".json")
+
+    # write csv file
+    open(csv_file, "w") do io
+        println(io, "plant_id,fruit_id,fruit_length (mm),polar (rad),se_polar (°),azimuth (rad),se_azimuth (°),cov_polar_azimuth (°²),flagged,internode (mm),div_angle (°),chirality")
+        for plant_id in sort(eachindex(res) |> collect)
+            data = res[plant_id].result
+            println(io, "$plant_id,1,$(data.lengths[1]),$(data.polar[1]),$(data.se_polar[1]),$(data.azimuth[1]),$(data.se_azimuth[1]),$(data.cov_θϕ[1]),$(data.flagged[1]),,,$(data.orientation)")
+            for i in 2:length(data.polar)
+                println(io, ",$i,$(data.lengths[i]),$(data.polar[i]),$(data.se_polar[i]),$(data.azimuth[i]),$(data.se_azimuth[i]),$(data.cov_θϕ[i]),$(data.flagged[i]),$(data.internodes[i - 1]),$(data.div_angles[i - 1]),")
+            end
+        end
+    end
+
+    # write json file
+    dict = Dict(plant_id => res[plant_id].result for plant_id in eachindex(res))
+    open(json_file, "w") do io
+        JSON.json(io, dict; pretty = true, inline_limit = 1)
+    end
+
+    println("Successfully saved:\n - $csv_file\n - $json_file")
+end
+
 mutable struct ROMIViewerState
     root_path::String
     paths::Vector{String}
@@ -898,7 +932,6 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     scatter!(ax, int_point; markersize = 0.03, markerspace = :data, color = :firebrick)
 
     # mouse hover circle
-    #scene = Makie.get_scene(Makie.get_top_parent(gl))
     mouse_pos_local = @lift begin
         mp = $(events(ax).mouseposition)
         vp = $(ax.scene.viewport)
