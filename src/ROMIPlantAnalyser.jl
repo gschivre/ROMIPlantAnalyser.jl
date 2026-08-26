@@ -43,9 +43,9 @@ function __init__()
     CUDA.functional() || return nothing
     try
         @info "ROMIPlantAnalyser GPU & GLMakie warm-up..."
+        fig = Figure()
         scan, vol_params, bbox_params = generate_synthetic_plant_scan(mktempdir())
         rv = ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, verbose = false)
-        fig = Figure()
         gl_mask = GridLayout(fig[1, 1])
         gl_vol = GridLayout(fig[1, 2])
         gl_skl = GridLayout(fig[1, 3])
@@ -54,9 +54,13 @@ function __init__()
         romi_skeleton!(rv, gl_skl)
         Makie.colorbuffer(fig; px_per_unit = 1)
         Makie.second_resolve(fig, :gl_renderobject)
-        CUDA.reclaim()
+        empty!(fig)
+        rv = nothing
     catch e
         @warn "GPU kernel & GLMakie warm-up failed!" exception = (e, catch_backtrace())
+    finally
+        GC.gc()
+        CUDA.reclaim()
     end
     return nothing
 end

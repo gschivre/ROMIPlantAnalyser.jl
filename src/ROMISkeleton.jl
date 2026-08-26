@@ -761,6 +761,10 @@ function closest_point_t(ac::ArcLengthNWSmoothedCurve{F}, target::Point3{F}; tol
     elseif best_i == n_dense
         return ac.curve.t_end
     end
+
+    # restrict search interval locally around the discrete minimum
+    a = ac.t_dense[max(1, best_i - 1)]
+    b = ac.t_dense[min(n_dense, best_i + 1)]
     x0 = ac.t_dense[best_i]
 
     # caching to avoid recomputation
@@ -786,10 +790,33 @@ function closest_point_t(ac::ArcLengthNWSmoothedCurve{F}, target::Point3{F}; tol
         return sum(abs2, cache_deriv[])
     end
 
-    # solve via NewtSafe root finding
-    t_opt, _ = newtsafe_rootfinding(f, df, ac.curve.t_start, ac.curve.t_end; x₀ = x0, tol = tol)
+    # solve via NewtSafe root finding (local bracket)
+    fa = f(a)
+    fb = f(b)
+    if fa * fb <= 0
+        t_opt, _ = newtsafe_rootfinding(f, df, a, b; x₀ = x0, tol = tol)
+        return t_opt
+    end
 
-    return t_opt
+    # non-bracketed / boundary cases
+    if f(ac.curve.t_end) <= 0
+        # If distance decreases past t_end, the boundary is optimal
+        return ac.curve.t_end
+    elseif f(ac.curve.t_start) >= 0
+        # If distance increases right from t_start, the boundary is optimal
+        return ac.curve.t_start
+    end
+
+    # attempt full-domain search
+    fa_full = f(ac.curve.t_start)
+    fb_full = f(ac.curve.t_end)
+    if fa_full * fb_full <= 0
+        t_opt, _ = newtsafe_rootfinding(f, df, ac.curve.t_start, ac.curve.t_end; x₀ = x0, tol = tol)
+        return t_opt
+    end
+
+    # fallback to the best coarse grid parameter
+    return x0
 end
 
 # to keep track of connected components

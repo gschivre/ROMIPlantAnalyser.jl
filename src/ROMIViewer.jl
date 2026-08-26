@@ -269,21 +269,6 @@ function ROMIViewer(data::ROMIScan;
     end
 end
 
-# Recursively free any CuArrays in the volume struct
-function free!(vol::ROMIVolume)
-    for fieldname in fieldnames(typeof(vol))
-        val = getfield(vol, fieldname)
-        if val isa CUDA.CuArray
-            CUDA.unsafe_free!(val)
-        end
-    end
-    return nothing
-end
-function free!(rv::ROMIViewer)
-    free!(rv.vol)
-    return nothing
-end
-
 struct ROMIResults
     result::ROMIAnglesAndInternodes
     bbox_params::ROMIBboxParams
@@ -1046,7 +1031,7 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
     active_tab = Observable{Int}(1)
     save_status = Observable("")
     confirm_overwrite = Observable(false)
-    prev_or_next = Observable("")
+    next_or_save = Observable("")
 
     # Renders the full navigation, tab header, and active tab content
     function render_main_ui()
@@ -1062,17 +1047,11 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
             next_btn = Button(nav_bar[1, 3], label = "Next →")
             
             on(prev_btn.clicks) do _
-                if haskey(state.results, plant_id(state.paths[state.idx]))
-                    prev_or_next[] = "prev"
-                    confirm_overwrite[] = true
-                else
-                    commit_result!(state, rv)
-                    start_scan!(mod1(state.idx - 1, n))
-                end
+                start_scan!(mod1(state.idx - 1, n))
             end
             on(next_btn.clicks) do _
                 if haskey(state.results, plant_id(state.paths[state.idx]))
-                    prev_or_next[] = "next"
+                    next_or_save[] = "next"
                     confirm_overwrite[] = true
                 else
                     commit_result!(state, rv)
@@ -1081,33 +1060,54 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
             end
             
             btn_save = Button(nav_bar[1, 4];
-                                label = "Save Results",
-                                buttoncolor = :forestgreen,
-                                buttoncolor_active = :darkgreen,
-                                buttoncolor_hover = :darkgreen,
+                                label = "Save",
+                                buttoncolor = :limegreen,
+                                buttoncolor_active = :olivedrab,
+                                buttoncolor_hover = :olivedrab,
                                 labelcolor = :white,
                                 labelcolor_active = :white,
                                 labelcolor_hover = :white)
-            Label(nav_bar[1, 5], save_status)
+            btn_quit = Button(nav_bar[1, 5];
+                                label = "Exit",
+                                buttoncolor = :crimson,
+                                buttoncolor_active = :firebrick,
+                                buttoncolor_hover = :firebrick,
+                                labelcolor = :white,
+                                labelcolor_active = :white,
+                                labelcolor_hover = :white)
+            Label(nav_bar[1, 6], save_status)
         else
             btn_save = Button(nav_bar[1, 1];
-                                label = "Save Results",
-                                buttoncolor = :forestgreen,
-                                buttoncolor_active = :darkgreen,
-                                buttoncolor_hover = :darkgreen,
+                                label = "Save",
+                                buttoncolor = :limegreen,
+                                buttoncolor_active = :olivedrab,
+                                buttoncolor_hover = :olivedrab,
                                 labelcolor = :white,
                                 labelcolor_active = :white,
                                 labelcolor_hover = :white)
-            Label(nav_bar[1, 2], save_status)
+            btn_quit = Button(nav_bar[1, 2];
+                                label = "Exit",
+                                buttoncolor = :crimson,
+                                buttoncolor_active = :firebrick,
+                                buttoncolor_hover = :firebrick,
+                                labelcolor = :white,
+                                labelcolor_active = :white,
+                                labelcolor_hover = :white)
+            Label(nav_bar[1, 3], save_status)
         end
 
         on(btn_save.clicks) do _
-            try
-                commit_result!(state, rv)
-                save_status[] = "Saved successfully!"
-            catch err
-                save_status[] = "Save failed!"
-                @error "Failed to compute or commit results" exception = (err, catch_backtrace())
+            if haskey(state.results, plant_id(state.paths[state.idx]))
+                next_or_save[] = "save"
+                confirm_overwrite[] = true
+            else
+                try
+                    commit_result!(state, rv)
+                    save_status[] = "Saved successfully!"
+                catch err
+                    save_status[] = "Save failed!"
+                    @error "Failed to compute or commit results" exception = (err, catch_backtrace())
+                end
             end
         end
 
@@ -1187,24 +1187,20 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
             on(btn_yes.clicks) do _
                 commit_result!(state, rv)
                 confirm_overwrite[] = false
-                if prev_or_next[] == "prev"
-                    start_scan!(mod1(state.idx - 1, n))
-                else
-                    start_scan!(mod1(state.idx + 1, n))
-                end
-                prev_or_next[] = ""
+                (next_or_save[] == "next") && start_scan!(mod1(state.idx + 1, n))
+                next_or_save[] = ""
+                save_status[] = "Saved successfully!"
             end
             on(btn_no.clicks) do _
                 confirm_overwrite[] = false
-                if prev_or_next[] == "prev"
-                    start_scan!(mod1(state.idx - 1, n))
-                else
-                    start_scan!(mod1(state.idx + 1, n))
-                end
-                prev_or_next[] = ""
+                (next_or_save[] == "next") && start_scan!(mod1(state.idx + 1, n))
+                next_or_save[] = ""
+                save_status[] = ""
             end
             on(btn_cancel.clicks) do _
                 confirm_overwrite[] = false
+                next_or_save[] = ""
+                save_status[] = ""
             end
         else
             render_main_ui()
@@ -1223,36 +1219,42 @@ end
 function romi_launch()
     fig = Figure(; size = (1500, 950), title = "Plant Phyllotaxis Analyser")
     root_gl = GridLayout(fig[1, 1])
-    screen = Observable(:loading) # :loading, :busy, :ready
+    screen = Observable(:loading) # :loading, :colmap, :viewer, :ready
     state = ROMIViewerState("", String[], 1, nothing, Dict{String, ROMIResults}())
 
     function start_scan!(idx::Int)
-        if state.rv !== nothing
-            free!(state.rv)
-            state.rv = nothing
-        end
+        # Clear memory
         GC.gc()
         CUDA.functional() && CUDA.reclaim()
+        state.rv = nothing
+
         state.idx = idx
         path = state.paths[idx]
-        screen[] = :busy
-        notify(screen)
+        screen[] = :colmap
         @async begin
-            local dataset
-            try
+            # Run colmap
+            colmap_task = Threads.@spawn begin
                 try
-                    dataset = run_and_load_colmap(path)
+                    run_and_load_colmap($path)
                 catch # try to not use the GPU
-                    dataset = run_and_load_colmap(path; force_colmap = true, rm_colmapdb = true, use_GPU = false)
+                    run_and_load_colmap($path; force_colmap = true, rm_colmapdb = true, use_GPU = false)
                 end
+            end
+            dataset = try
+                fetch(colmap_task)
             catch err
                 @error "Failed to load scan $path" exception = (err, catch_backtrace())
-                state.rv = nothing
-            else
-                saved = get(state.results, plant_id(path), nothing)
+                return nothing
+            end
+            
+            # Initialize viewer data
+            screen[] = :viewer
+            res = state.results
+            viewer_task = Threads.@spawn begin
+                saved = get($res, plant_id($path), nothing)
                 if saved !== nothing
                     # reopening an already-processed plant
-                    state.rv = ROMIViewer(dataset;
+                    ROMIViewer($dataset;
                         bbox_params = saved.bbox_params,
                         mask_params = saved.mask_params,
                         vol_params = saved.vol_params,
@@ -1261,10 +1263,19 @@ function romi_launch()
                         stem_top = saved.stem_top,
                         branch_tips = saved.branch_tips)
                 else
-                    state.rv = ROMIViewer(dataset)
+                    ROMIViewer($dataset)
                 end
-                screen[] = :ready
             end
+            rv = try
+                fetch(viewer_task)
+            catch err
+                @error "Failed to initialize viewer" exception = (err, catch_backtrace())
+                return nothing
+            end
+
+            # Update UI to Ready state
+            state.rv = rv
+            screen[] = :ready
         end
     end
 
@@ -1282,7 +1293,7 @@ function romi_launch()
                 end
                 start_scan!(Int(start_idx))
             end
-        elseif s == :busy
+        elseif s == :colmap
             card_gl = GridLayout(root_gl[:, 1]; halign = :center, valign = :center, tellwidth = false, tellheight = false)
             Box(
                 card_gl[1, 1],
@@ -1296,7 +1307,23 @@ function romi_launch()
             )
             msg_gl = GridLayout(card_gl[1, 1]; alignmode = Outside(30, 30, 30, 30))
             Label(msg_gl[1, 1],
-                  "Running COLMAP & Initializing viewer data for $(basename(state.paths[state.idx]))\nPlant $(state.idx) / $(length(state.paths))…",
+                  "Running COLMAP for $(basename(state.paths[state.idx]))\nPlant $(state.idx) / $(length(state.paths))…",
+                  fontsize = 18, halign = :center, justification = :center)
+        elseif s == :viewer
+            card_gl = GridLayout(root_gl[:, 1]; halign = :center, valign = :center, tellwidth = false, tellheight = false)
+            Box(
+                card_gl[1, 1],
+                color = (:gray, 0.08),
+                strokecolor = :gray,
+                strokewidth = 2,
+                cornerradius = 12,
+                width = 550,
+                tellheight = false,
+                tellwidth = false
+            )
+            msg_gl = GridLayout(card_gl[1, 1]; alignmode = Outside(30, 30, 30, 30))
+            Label(msg_gl[1, 1],
+                  "Initializing viewer data for $(basename(state.paths[state.idx]))\nPlant $(state.idx) / $(length(state.paths))…",
                   fontsize = 18, halign = :center, justification = :center)
         elseif s == :ready
             romi_viewer!(start_scan!, state, root_gl)
