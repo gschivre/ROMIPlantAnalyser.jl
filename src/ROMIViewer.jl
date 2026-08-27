@@ -250,13 +250,14 @@ function ROMIViewer(data::ROMIScan;
                     stem_root::Union{Nothing, Int} = nothing,
                     stem_top::Union{Nothing, Int} = nothing,
                     branch_tips::Union{Nothing, Vector{ROMITipID}} = nothing,
+                    use_gpu::Bool = CUDA.functional(),
                     verbose::Bool = true)
     verbose && @info "Initializing viewer data..."
     with_logger(NullLogger()) do
         # we need at least the masked frame but precomputing the volume with a 
         # smoothing will trigger compilation of the CUDA kernel!
         mf = ROMIMaskedFrames(data, mask_params)
-        vol = ROMIVolume(mf, vol_params)
+        vol = ROMIVolume(mf, vol_params; use_gpu = use_gpu)
         msh = makemesh(vol, skel_params.t)
         skl = ROMISkeleton(vol, skel_params)
         
@@ -1020,7 +1021,7 @@ end
 # ==========================================
 # Interactive Data Extraction
 # ==========================================
-function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLayout)
+function romi_viewer!(start_scan!::Function, state::ROMIViewerState, fig::Figure, gl::GridLayout)
     rv = state.rv
     if rv === nothing
         Label(gl[1, 1], "Failed to load scan!", fontsize = 24)
@@ -1042,10 +1043,17 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
         tab_bar = GridLayout(gl[2, 1]; tellheight = true, halign = :center)
 
         if n > 1
-            prev_btn = Button(nav_bar[1, 1], label = "← Prev")
-            Label(nav_bar[1, 2], "Plant $(state.idx) / $n: $(basename(state.paths[state.idx]))")
-            next_btn = Button(nav_bar[1, 3], label = "Next →")
+            id_menu = Menu(nav_bar[1, 1];
+                options = plant_id.(state.paths),
+                default = plant_id(state.paths[state.idx]),
+                height = 20, width = 150)
+            prev_btn = Button(nav_bar[1, 2], label = "← Prev")
+            Label(nav_bar[1, 3], "Plant $(state.idx) / $n: $(basename(state.paths[state.idx]))")
+            next_btn = Button(nav_bar[1, 4], label = "Next →")
             
+            on(id_menu.i_selected) do idx
+                start_scan!(idx)
+            end
             on(prev_btn.clicks) do _
                 start_scan!(mod1(state.idx - 1, n))
             end
@@ -1059,7 +1067,7 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
                 end
             end
             
-            btn_save = Button(nav_bar[1, 4];
+            btn_save = Button(nav_bar[1, 5];
                                 label = "Save",
                                 buttoncolor = :limegreen,
                                 buttoncolor_active = :olivedrab,
@@ -1067,7 +1075,7 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
                                 labelcolor = :white,
                                 labelcolor_active = :white,
                                 labelcolor_hover = :white)
-            btn_quit = Button(nav_bar[1, 5];
+            btn_exit = Button(nav_bar[1, 6];
                                 label = "Exit",
                                 buttoncolor = :crimson,
                                 buttoncolor_active = :firebrick,
@@ -1075,7 +1083,7 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
                                 labelcolor = :white,
                                 labelcolor_active = :white,
                                 labelcolor_hover = :white)
-            Label(nav_bar[1, 6], save_status)
+            Label(nav_bar[1, 7], save_status)
         else
             btn_save = Button(nav_bar[1, 1];
                                 label = "Save",
@@ -1085,7 +1093,7 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
                                 labelcolor = :white,
                                 labelcolor_active = :white,
                                 labelcolor_hover = :white)
-            btn_quit = Button(nav_bar[1, 2];
+            btn_exit = Button(nav_bar[1, 2];
                                 label = "Exit",
                                 buttoncolor = :crimson,
                                 buttoncolor_active = :firebrick,
@@ -1109,6 +1117,11 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
                     @error "Failed to compute or commit results" exception = (err, catch_backtrace())
                 end
             end
+        end
+        on(btn_exit.clicks) do _
+            # Close the screen
+            screen = Makie.getscreen(fig.scene)
+            isnothing(screen) || GLMakie.GLFW.SetWindowShouldClose(screen.glscreen, true)
         end
 
         # Tab Navigation Buttons with active highlight
@@ -1142,7 +1155,7 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
 
     # Tab change listener
     on(active_tab) do _
-        !confirm_overwrite[] && render_main_ui()
+        !(confirm_overwrite[]) && render_main_ui()
     end
 
     # Overwrite confirmation modal view
@@ -1185,11 +1198,20 @@ function romi_viewer!(start_scan!::Function, state::ROMIViewerState, gl::GridLay
             btn_cancel = Button(btn_row[1, 3]; label = "Cancel")
 
             on(btn_yes.clicks) do _
-                commit_result!(state, rv)
+                try
+                    commit_result!(state, rv)
+                    if next_or_save[] == "save"
+                        save_status[] = "Saved successfully!"
+                    end
+                catch err
+                    if next_or_save[] == "save"
+                        save_status[] = "Save failed!"
+                    end
+                    @error "Failed to compute or commit results" exception = (err, catch_backtrace())
+                end
                 confirm_overwrite[] = false
                 (next_or_save[] == "next") && start_scan!(mod1(state.idx + 1, n))
                 next_or_save[] = ""
-                save_status[] = "Saved successfully!"
             end
             on(btn_no.clicks) do _
                 confirm_overwrite[] = false
@@ -1217,20 +1239,24 @@ end
 # Main Application Launcher
 # ==========================================
 function romi_launch()
-    fig = Figure(; size = (1500, 950), title = "Plant Phyllotaxis Analyser")
+    GLMakie.activate!(; title = "Plant Phyllotaxis Analyser")
+    fig = Figure(; size = (1500, 950))
     root_gl = GridLayout(fig[1, 1])
-    screen = Observable(:loading) # :loading, :colmap, :viewer, :ready
+
+    # app status
+    status = Observable(:loading) # :loading, :colmap, :viewer, :ready
     state = ROMIViewerState("", String[], 1, nothing, Dict{String, ROMIResults}())
 
     function start_scan!(idx::Int)
         # Clear memory
+        !(isnothing(state.rv)) && CUDA.unsafe_free!(state.rv.vol)
+        state.rv = nothing
         GC.gc()
         CUDA.functional() && CUDA.reclaim()
-        state.rv = nothing
 
         state.idx = idx
         path = state.paths[idx]
-        screen[] = :colmap
+        status[] = :colmap
         @async begin
             # Run colmap
             colmap_task = Threads.@spawn begin
@@ -1248,7 +1274,7 @@ function romi_launch()
             end
             
             # Initialize viewer data
-            screen[] = :viewer
+            status[] = :viewer
             res = state.results
             viewer_task = Threads.@spawn begin
                 saved = get($res, plant_id($path), nothing)
@@ -1261,9 +1287,10 @@ function romi_launch()
                         skel_params = saved.skel_params,
                         stem_root = saved.stem_root,
                         stem_top = saved.stem_top,
-                        branch_tips = saved.branch_tips)
+                        branch_tips = saved.branch_tips,
+                        verbose = false)
                 else
-                    ROMIViewer($dataset)
+                    ROMIViewer($dataset; verbose = false)
                 end
             end
             rv = try
@@ -1275,11 +1302,24 @@ function romi_launch()
 
             # Update UI to Ready state
             state.rv = rv
-            screen[] = :ready
+            status[] = :ready
         end
     end
 
-    on(screen) do s
+    # Free memory on exit
+    on(events(fig.scene).window_open) do is_open
+        if !is_open
+            if !isnothing(state.rv)
+                CUDA.unsafe_free!(state.rv.vol)
+                state.rv = nothing
+            end
+            GC.gc()
+            CUDA.functional() && CUDA.reclaim()
+        end
+    end
+
+    # Main logic to switch between data loading and interactive window
+    on(status) do s
         clear_panel!(root_gl)
         if s == :loading
             romi_data_loader!(fig, root_gl) do root_path, valid_paths
@@ -1326,11 +1366,11 @@ function romi_launch()
                   "Initializing viewer data for $(basename(state.paths[state.idx]))\nPlant $(state.idx) / $(length(state.paths))…",
                   fontsize = 18, halign = :center, justification = :center)
         elseif s == :ready
-            romi_viewer!(start_scan!, state, root_gl)
+            romi_viewer!(start_scan!, state, fig, root_gl)
         end
     end
 
-    notify(screen)
+    notify(status)
     display(fig)
     return fig
 end

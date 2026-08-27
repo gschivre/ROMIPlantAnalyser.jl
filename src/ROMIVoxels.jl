@@ -180,6 +180,7 @@ struct ROMIVolume{I <: Integer,
                 V <: AbstractVector} <: AbstractArray{F, 3}
     # CPU data to avoid repeated data transfert from the GPU
     cpu_data::Array{F, 3}
+    use_gpu::Bool
 
     # voxel coordinates grid
     vox_grid::ROMIVoxelGrid{F}
@@ -201,20 +202,22 @@ struct ROMIVolume{I <: Integer,
     # parameters used
     params::ROMIVolumeParams
 
-    function ROMIVolume(mf::ROMIMaskedFrames, params::ROMIVolumeParams)
+    function ROMIVolume(mf::ROMIMaskedFrames, params::ROMIVolumeParams; use_gpu::Bool = CUDA.functional())
         bbox = params.bbox
         voxel_size = params.voxel_size
         
         # use GPU if available
-        if CUDA.functional()
+        if use_gpu && CUDA.functional()
             # volume carving
             vox_grid = ROMIVoxelGrid(Rect3f(bbox), voxel_size)
             @info "Volume averaging of $(length(vox_grid)) voxels using GPU"
             dims = size(vox_grid)
             n = prod(dims)
             lod = CuVector{Float32}(undef, n)
-            f = VoxelVotingGPUCallable(adapt(CuArray, togpu.(mf.frames)),
-                                        adapt(CuArray, mf.masks),
+            gpu_frames = adapt(CuArray, togpu.(mf.frames))
+            gpu_masks  = adapt(CuArray, mf.masks)
+            f = VoxelVotingGPUCallable(gpu_frames,
+                                        gpu_masks,
                                         Float32(params.prior_prob),
                                         Float32(params.tpr),
                                         Float32(params.fpr))
@@ -236,11 +239,11 @@ struct ROMIVolume{I <: Integer,
             copyto!(cpu_data, ws.x)
 
             S = typeof(lod)
-            M = typeof(mf.masks)
+            M = typeof(gpu_masks)
             G = arraytype(gmrf_grid)
-            V = typeof(mf.frames)
+            V = typeof(gpu_frames)
             return new{Int32, Float32, S, M, G, V}(
-                cpu_data, vox_grid, dims, lod, mf.frames, mf.masks, gmrf_grid, ws, params)
+                cpu_data, use_gpu, vox_grid, dims, lod, gpu_frames, gpu_masks, gmrf_grid, ws, params)
         else
             # volume carving
             vox_grid = ROMIVoxelGrid(bbox, voxel_size)
@@ -271,13 +274,44 @@ struct ROMIVolume{I <: Integer,
             G = arraytype(gmrf_grid)
             V = typeof(mf.frames)
             return new{Int, Float64, Vector{Float64}, Array{Bool, 3}, G, V}(
-                cpu_data, vox_grid, dims, lod, mf.frames, mf.masks, gmrf_grid, ws, params)
+                cpu_data, use_gpu, vox_grid, dims, lod, mf.frames, mf.masks, gmrf_grid, ws, params)
         end
     end
 end
 Base.size(v::ROMIVolume) = v.dims
 Base.getindex(v::ROMIVolume, I...) = v.cpu_data[I...]
 Base.Array(v::ROMIVolume) = v.cpu_data
+
+# free GPU memory
+function CUDA.unsafe_free!(v::ROMIVolume)
+    CUDA.functional() || return nothing
+    
+    # Only deallocate if data resides on GPU
+    if v.use_gpu
+        # handle CuArray
+        CUDA.unsafe_free!(v.lod)
+        CUDA.unsafe_free!(v.frames)
+        CUDA.unsafe_free!(v.masks)
+
+        # handle ROMIGMRFGrid
+        CUDA.unsafe_free!(v.gmrf_grid.wx)
+        CUDA.unsafe_free!(v.gmrf_grid.wy)
+        CUDA.unsafe_free!(v.gmrf_grid.wz)
+        CUDA.unsafe_free!(v.gmrf_grid.diagacc)
+        CUDA.unsafe_free!(v.gmrf_grid.Lxbuf)
+
+        # handle CgWorkspace
+        CUDA.unsafe_free!(v.ws.Δx)
+        CUDA.unsafe_free!(v.ws.x)
+        CUDA.unsafe_free!(v.ws.r)
+        CUDA.unsafe_free!(v.ws.npc_dir)
+        CUDA.unsafe_free!(v.ws.p)
+        CUDA.unsafe_free!(v.ws.Ap)
+        CUDA.unsafe_free!(v.ws.z)
+    end
+
+    return nothing
+end
 
 # Updates the Welsch edge weights, exp(-(ΔD / τ) ^ 2), in-place.
 function update_weights!(v::ROMIVolume{I, F, S, M, G}) where {I, F, S, M, G}
@@ -369,11 +403,7 @@ struct VoxelVotingGPUCallable{V <: AbstractVector, M <: AbstractArray{Bool, 3}, 
     fpr::F
 end
 (f::VoxelVotingGPUCallable)(p::Point3) = voxel_voting(p, f.frames, f.masks, f.prob, f.tpr, f.fpr)
-function Adapt.adapt_structure(to, f::VoxelVotingGPUCallable)
-    frames = Adapt.adapt_structure(to, f.frames)
-    masks = Adapt.adapt_structure(to, f.masks)
-    return VoxelVotingGPUCallable(frames, masks, f.prob, f.tpr, f.fpr)
-end
+Adapt.@adapt_structure VoxelVotingGPUCallable
 
 """
    compute_lod!(v::ROMIVolume)
@@ -381,7 +411,7 @@ end
 Given a bounding box, voxel size, and masks compute the log-odds of occupancy from Bayesian space carving using CPU or GPU threads.
 """
 function compute_lod!(v::ROMIVolume)
-    if CUDA.functional()
+    if v.use_gpu
         @info "Volume averaging of $(length(v.vox_grid)) voxels using GPU"
         f = VoxelVotingGPUCallable(v.frames,
                                     v.masks,
@@ -414,7 +444,7 @@ Smooth the 3D occupancy volume `v` in-place by computing the Maximum A Posterior
 estimate of a Gaussian Markov Random Field (GMRF).
 """
 function smooth_lod!(v::ROMIVolume)
-    if CUDA.functional()
+    if v.use_gpu
         @info "Volume smoothing of $(length(v.vox_grid)) voxels using GPU"
         A = build_system_matrix(v.gmrf_grid, Float32(v.params.λ))
         b = v.lod

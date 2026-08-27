@@ -32,7 +32,7 @@ export ROMIViewer, ROMIResults, run_and_load_colmap, load_results, export_result
 @setup_workload begin
     scan, vol_params, bbox_params = generate_synthetic_plant_scan(mktempdir())
     @compile_workload begin
-        ROMIAnglesAndInternodes(ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, verbose = false).skl)
+        ROMIAnglesAndInternodes(ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, use_gpu = false, verbose = false).skl)
     end
 end
 
@@ -40,12 +40,15 @@ end
 # GLMakie Shader & Screen Warm-up
 function __init__()
     (get(ENV, "ROMI_SKIP_WARMUP", "false") == "true") && return nothing
-    CUDA.functional() || return nothing
     try
-        @info "ROMIPlantAnalyser GPU & GLMakie warm-up..."
+        if CUDA.functional()
+            @info "ROMIPlantAnalyser GPU & GLMakie warm-up..."
+        else
+            @info "ROMIPlantAnalyser GLMakie warm-up..."
+        end
         fig = Figure()
         scan, vol_params, bbox_params = generate_synthetic_plant_scan(mktempdir())
-        rv = ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, verbose = false)
+        rv = ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, use_gpu = CUDA.functional(), verbose = false)
         gl_mask = GridLayout(fig[1, 1])
         gl_vol = GridLayout(fig[1, 2])
         gl_skl = GridLayout(fig[1, 3])
@@ -54,13 +57,18 @@ function __init__()
         romi_skeleton!(rv, gl_skl)
         Makie.colorbuffer(fig; px_per_unit = 1)
         Makie.second_resolve(fig, :gl_renderobject)
-        empty!(fig)
+        CUDA.unsafe_free!(rv.vol)
         rv = nothing
     catch e
-        @warn "GPU kernel & GLMakie warm-up failed!" exception = (e, catch_backtrace())
+        if CUDA.functional()
+            @warn "GPU kernel & GLMakie warm-up failed!" exception = (e, catch_backtrace())
+        else
+            @warn "GLMakie warm-up failed!" exception = (e, catch_backtrace())
+        end
     finally
+        GLMakie.closeall()
         GC.gc()
-        CUDA.reclaim()
+        CUDA.functional() && CUDA.reclaim()
     end
     return nothing
 end
