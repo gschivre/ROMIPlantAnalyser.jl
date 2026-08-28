@@ -41,6 +41,7 @@ function run_and_load_colmap(project_dir::String;
                     force_colmap::Bool = false,
                     rm_colmapdb::Bool = false,
                     use_GPU::Bool = true,
+                    use_pairs::Bool = true,
                     xyz_error::Float64 = 3.0)
     abs_project_dir = abspath(project_dir)
     plant_id = basename(rstrip(abs_project_dir, ('/', '\\')))
@@ -55,7 +56,7 @@ function run_and_load_colmap(project_dir::String;
         pkg_env = pkgdir(@__MODULE__)
         ROMIcolmap_script = joinpath(pkg_env, "src", "ROMIcolmap.jl")
         cmd = addenv(
-            `$(Base.julia_cmd()) --project=$pkg_env $ROMIcolmap_script $project_dir $rerun_colmap $use_GPU $xyz_error`,
+            `$(Base.julia_cmd()) --project=$pkg_env $ROMIcolmap_script $project_dir $rerun_colmap $use_GPU $use_pairs $xyz_error`,
             "ROMI_SKIP_WARMUP" => "true"
         )
         run(cmd)
@@ -1238,7 +1239,7 @@ end
 # ==========================================
 # Main Application Launcher
 # ==========================================
-function romi_launch()
+function romi_launch(; use_pairs::Bool = true, xyz_error::Float64 = 3.0)
     GLMakie.activate!(; title = "Plant Phyllotaxis Analyser")
     fig = Figure(; size = (1500, 950))
     root_gl = GridLayout(fig[1, 1])
@@ -1261,7 +1262,7 @@ function romi_launch()
             # Run colmap
             colmap_task = Threads.@spawn begin
                 try
-                    run_and_load_colmap($path)
+                    run_and_load_colmap($path; use_pairs = use_pairs, xyz_error = xyz_error)
                 catch # try to not use the GPU
                     run_and_load_colmap($path; force_colmap = true, rm_colmapdb = true, use_GPU = false)
                 end

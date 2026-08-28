@@ -72,11 +72,11 @@ function extract_pose_priors(dataset::ROMIScan)
 end
 
 """
-    run_colmap(dataset::ROMIScan; use_GPU::Bool = true)
+    run_colmap(dataset::ROMIScan; use_GPU::Bool = true, use_Pairs::Bool = true)
 
 Run colmap and align the colmap model to approximate pose.
 """
-function run_colmap(dataset::ROMIScan; use_GPU::Bool = true)
+function run_colmap(dataset::ROMIScan; use_GPU::Bool = true, use_Pairs::Bool = true)
     if isnothing(Sys.which("colmap"))
         error("`colmap` executable was not found in system PATH. Please ensure COLMAP is installed and available in terminal.")
     end
@@ -93,15 +93,22 @@ function run_colmap(dataset::ROMIScan; use_GPU::Bool = true)
     # Inject pose priors
     extract_pose_priors(dataset)
 
-    # Write image pairs
-    write_image_pairs(dataset)
+    if use_pairs
+        # Write image pairs
+        write_image_pairs(dataset)
 
-    # Matching
-    run(`colmap matches_importer \
-            --database_path $(dataset.db_path) \
-            --match_list_path $(dataset.pairs_path) \
-            --FeatureMatching.use_gpu $use_GPU \
-            --FeatureMatching.guided_matching 1`)
+        # Matching
+        run(`colmap matches_importer \
+                --database_path $(dataset.db_path) \
+                --match_list_path $(dataset.pairs_path) \
+                --FeatureMatching.use_gpu $use_GPU \
+                --FeatureMatching.guided_matching 1`)
+    else
+        # Matching
+        run(`colmap exhaustive_matcher \
+                --database_path $(dataset.db_path) \
+                --FeatureMatching.use_gpu $use_GPU`)
+    end
 
     # Sparse Reconstruction mapping using priors
     mkpath(dataset.sparse_dir)
@@ -169,15 +176,16 @@ if length(ARGS) == 1 # run colmap and the pose extraction
     extract_frames!(dataset)
     serialize(joinpath(dataset.project_dir, "$(dataset.plant_id)_ROMIScan.jls"), dataset)
 elseif length(ARGS) > 1
-    xyz_error = (length(ARGS) > 3 ? parse(Float64, ARGS[4]) : 1.0)
+    xyz_error = (length(ARGS) > 4 ? parse(Float64, ARGS[5]) : 1.0)
     dataset = ROMIScan(ARGS[1]; std_xyz = ntuple(i -> xyz_error, 3))
     if parse(Bool, ARGS[2])
         use_gpu = (length(ARGS) > 2 ? parse(Bool, ARGS[3]) : true)
-        run_colmap(dataset; use_GPU = use_gpu)
+        use_pairs = (length(ARGS) > 3 ? parse(Bool, ARGS[4]) : true)
+        run_colmap(dataset; use_GPU = use_gpu, use_Pairs = use_pairs)
     end
     extract_frames!(dataset)
     serialize(joinpath(dataset.project_dir, "$(dataset.plant_id)_ROMIScan.jls"), dataset)
 else
-    println("Usage: julia ROMIcolmap.jl /path/to/project_folder [runcolamp = 1] [use_gpu = 1] [xyz_error = 1.0]")
+    println("Usage: julia ROMIcolmap.jl /path/to/project_folder [runcolmap = 1] [use_gpu = 1] [use_pairs = 1] [xyz_error = 1.0]")
     exit(1)
 end
