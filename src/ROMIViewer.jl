@@ -393,7 +393,7 @@ function romi_mask_and_bbox!(rv::ROMIViewer, gl::GridLayout)
     sg_bbox = SliderGrid(sidebar[2, 1],
         (label = "x origin", range = -50:50, format = "{:.0f}mm", startvalue = rv.bbox_params.x_offset),
         (label = "y origin", range = -50:50, format = "{:.0f}mm", startvalue = rv.bbox_params.y_offset),
-        (label = "z origin", range = -150:0, format = "{:.0f}mm", startvalue = rv.bbox_params.z_offset),
+        (label = "z origin", range = -200:0, format = "{:.0f}mm", startvalue = rv.bbox_params.z_offset),
         (label = "x width", range = 10:150, format = "{:.0f}mm", startvalue = rv.bbox_params.x_span),
         (label = "y width", range = 10:150, format = "{:.0f}mm", startvalue = rv.bbox_params.y_span),
         (label = "z width", range = 100:500, format = "{:.0f}mm", startvalue = rv.bbox_params.z_span);
@@ -431,7 +431,7 @@ function romi_mask_and_bbox!(rv::ROMIViewer, gl::GridLayout)
     Label(sidebar[7, 1], "Mask Parameters", font = :bold, halign = :center, tellwidth = false)
     sg_mask = SliderGrid(sidebar[8, 1],
         (label = "threshold t", range = 0:255, format = "{:.0f}", startvalue = round(Int, mask_params.t * 255)),
-        (label = "min size m", range = 0:50:10000, format = "{:.0f}", startvalue = mask_params.m),
+        (label = "min size m", range = [0:10:100; 200:100:10000], format = "{:.0f}", startvalue = mask_params.m),
         (label = "dilation d", range = [0; 1:2:15], format = "{:.0f}", startvalue = mask_params.d);
         tellheight = true, tellwidth = false)
     t, m, d = (s.value for s in sg_mask.sliders[1:3])
@@ -564,6 +564,8 @@ function romi_mask_and_bbox!(rv::ROMIViewer, gl::GridLayout)
             with_logger(NullLogger()) do
                 vol_params = ROMIVolumeParams(bbox = initialize_bbox(rv.data, rv.bbox_params), voxel_size = rv.voxel_size)
                 copyto!(vol_params, rv.vol.params) # copy existing free parameters
+                CUDA.unsafe_free!(rv.vol) # Clear memory
+                CUDA.functional() && CUDA.reclaim()
                 rv.vol = ROMIVolume(rv.mf, vol_params)
             end
         end
@@ -594,7 +596,7 @@ function romi_volume!(rv::ROMIViewer, gl::GridLayout)
     # Smoothing parameters
     Label(sidebar[1, 1], "Volume Smoothing Parameters"; font = :bold, halign = :center, tellwidth = false)
     sg_vol = SliderGrid(sidebar[2, 1],
-        (label = "smoothing penality λ", range = 0:1:100, format = "{:.0f}", startvalue = vol_params.λ);
+        (label = "smoothing penality λ", range = 0:1:150, format = "{:.0f}", startvalue = vol_params.λ);
         tellheight = true, tellwidth = false)
     bt_vol = Button(sidebar[3, 1]; label = "Apply Smoothing", tellwidth = false)
 
