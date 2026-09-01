@@ -656,7 +656,8 @@ function romi_volume!(rv::ROMIViewer, gl::GridLayout)
 
     on(bt_iso.clicks) do _
         ts = @elapsed begin
-            update_threshold!(rv.skl, rv.vol, skel_params.t)
+            # need to force the update in case only the smoothing penality has changed!
+            update_threshold!(rv.skl, rv.vol, skel_params.t; force = true)
         end
         status_lbl.text[] = "Skeleton updated in $(round(ts; digits = 2))s."
     end

@@ -1477,16 +1477,16 @@ function update_weights!(vb::ROMIBinaryVolume, β::Real, νmin::Real)
 end
 
 """
-    update_threshold!(s::ROMISkeleton, v, t::Real)
+    update_threshold!(s::ROMISkeleton, v, t::Real; force::Bool = false)
 
 Recomputes the binary volume for the updated threshold `t`.
 """
-function update_threshold!(s::ROMISkeleton, v, t::Real)
+function update_threshold!(s::ROMISkeleton, v, t::Real; force::Bool = false)
     # check whether we need to recompute
     bbox_origin = Point3d(Rect3(v.vox_grid).origin)
     voxel_size = v.params.voxel_size
     vox_grid = ROMIVoxelGrid(bbox_origin, size(v), voxel_size)
-    ((s.params.t == t) && (s.vb.vox_grid == vox_grid)) && return nothing
+    ((s.params.t == t) && (s.vb.vox_grid == vox_grid) && !force) && return nothing
 
     s.params.t = t
     vb = ROMIBinaryVolume(v .> t, s.params.β, s.params.νmin; bbox_origin = bbox_origin, voxel_size = voxel_size)
