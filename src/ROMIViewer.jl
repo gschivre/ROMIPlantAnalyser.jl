@@ -45,8 +45,8 @@ function extract_frames_from_romi!(dataset::ROMIScan, path::String)
     @info "Extracting pose information from colmap for $(dataset.plant_id)"
     # extract camera information
     cam_json = JSON.parsefile(joinpath(path, "cameras.json"))
-    w = Float64(cam_json["1"]["width"])
-    h = Float64(cam_json["1"]["height"])
+    w = Int(cam_json["1"]["width"])
+    h = Int(cam_json["1"]["height"])
     fx, fy, cx, cy, k1, k2, p1, p2 = Float64.(cam_json["1"]["params"])
     cam = ROMICamera(w, h, fx, fy, cx, cy, k1, k2, p1, p2)
 
