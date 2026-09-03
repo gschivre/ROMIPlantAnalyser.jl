@@ -25,6 +25,40 @@ function validate_scan_folder(path::String)
     return (:invalid, String[])
 end
 
+# parse the rotmat from ROMI images.json to a julia Mat3d
+function parse_rotmat(x)
+    R = Matrix{Float64}(undef, 3, 3)
+    for i in axes(R, 1)
+        for j in axes(R, 2)
+            R[i, j] = x[i][j]
+        end
+    end
+    return Mat3d(R)
+end
+
+"""
+    extract_frames_from_romi!(dataset::ROMIScan, path::String)
+
+Extract rotation matrix and translation vector and construct frames using colmap results from ROMI pipeline.
+"""
+function extract_frames_from_romi!(dataset::ROMIScan, path::String)
+    @info "Extracting pose information from colmap for $(dataset.plant_id)"
+    # extract camera information
+    cam_json = JSON.parsefile(joinpath(path, "cameras.json"))
+    w = Float64(cam_json["1"]["width"])
+    h = Float64(cam_json["1"]["height"])
+    fx, fy, cx, cy, k1, k2, p1, p2 = Float64.(cam_json["1"]["params"])
+    cam = ROMICamera(w, h, fx, fy, cx, cy, k1, k2, p1, p2)
+
+    # extract frames
+    frames_json = JSON.parsefile(joinpath(path, "images.json"))
+    for (i, img_name) in Iterators.enumerate(dataset.images_list)
+        R = parse_rotmat(frames_json[img_name]["rotmat"])
+        t = Vec3d(frames_json[img_name]["tvec"])
+        dataset.frames[i] = ROMIFrame(R, t, cam)
+    end
+end
+
 """
     run_and_load_colmap(project_dir::String;
                 force_colmap::Bool = false,
@@ -38,30 +72,40 @@ Use `rm_colmapdb = true`, to delete existing colmap database and force feature e
 Use `xyz_error` to specify the pose prior error in mm.
 """
 function run_and_load_colmap(project_dir::String;
+                    from_romi::Bool = false,
                     force_colmap::Bool = false,
                     rm_colmapdb::Bool = false,
                     use_GPU::Bool = true,
                     use_pairs::Bool = true,
                     xyz_error::Float64 = 3.0)
     abs_project_dir = abspath(project_dir)
-    plant_id = basename(rstrip(abs_project_dir, ('/', '\\')))
-    jls_file = joinpath(abs_project_dir, "$(plant_id)_ROMIScan.jls")
-    if (!isfile(jls_file)) || force_colmap
-        if isfile(jls_file)
-            @info "Overwriting existing colmap outputs and $(plant_id)_ROMIScan.jls"
+    if from_romi
+        dataset = ROMIScan(abs_project_dir)
+        romi_colmap_folder = joinpath(abs_project_dir, first(filter!(startswith("Colmap_"), readdir(abs_project_dir))))
+        extract_frames_from_romi!(dataset, romi_colmap_folder)
+
+        # serialize for next time
+        serialize(joinpath(dataset.project_dir, "$(dataset.plant_id)_ROMIScan.jls"), dataset)
+    else
+        plant_id = basename(rstrip(abs_project_dir, ('/', '\\')))
+        jls_file = joinpath(abs_project_dir, "$(plant_id)_ROMIScan.jls")
+        if (!isfile(jls_file)) || force_colmap
+            if isfile(jls_file)
+                @info "Overwriting existing colmap outputs and $(plant_id)_ROMIScan.jls"
+            end
+            sparse_dir = joinpath(abs_project_dir, "sparse")
+            rerun_colmap = (!isdir(sparse_dir)) || force_colmap
+            (rerun_colmap && rm_colmapdb) && rm(joinpath(abs_project_dir, "colmap", "$(plant_id)_colmap_database.db"); force = true)
+            pkg_env = pkgdir(@__MODULE__)
+            ROMIcolmap_script = joinpath(pkg_env, "src", "ROMIcolmap.jl")
+            cmd = addenv(
+                `$(Base.julia_cmd()) --project=$pkg_env $ROMIcolmap_script $project_dir $rerun_colmap $use_GPU $use_pairs $xyz_error`,
+                "ROMI_SKIP_WARMUP" => "true"
+            )
+            run(cmd)
         end
-        sparse_dir = joinpath(abs_project_dir, "sparse")
-        rerun_colmap = (!isdir(sparse_dir)) || force_colmap
-        (rerun_colmap && rm_colmapdb) && rm(joinpath(abs_project_dir, "colmap", "$(plant_id)_colmap_database.db"); force = true)
-        pkg_env = pkgdir(@__MODULE__)
-        ROMIcolmap_script = joinpath(pkg_env, "src", "ROMIcolmap.jl")
-        cmd = addenv(
-            `$(Base.julia_cmd()) --project=$pkg_env $ROMIcolmap_script $project_dir $rerun_colmap $use_GPU $use_pairs $xyz_error`,
-            "ROMI_SKIP_WARMUP" => "true"
-        )
-        run(cmd)
+        dataset = deserialize(jls_file)
     end
-    dataset = deserialize(jls_file)
     return dataset
 end
 
@@ -1242,7 +1286,7 @@ end
 # ==========================================
 # Main Application Launcher
 # ==========================================
-function romi_launch(; use_pairs::Bool = true, xyz_error::Float64 = 3.0)
+function romi_launch(; use_pairs::Bool = true, from_romi::Bool = false, xyz_error::Float64 = 3.0)
     GLMakie.activate!(; title = "Plant Phyllotaxis Analyser")
     fig = Figure(; size = (1500, 950))
     root_gl = GridLayout(fig[1, 1])
@@ -1265,9 +1309,9 @@ function romi_launch(; use_pairs::Bool = true, xyz_error::Float64 = 3.0)
             # Run colmap
             colmap_task = Threads.@spawn begin
                 try
-                    run_and_load_colmap($path; use_pairs = use_pairs, xyz_error = xyz_error)
+                    run_and_load_colmap($path; from_romi = from_romi, use_pairs = use_pairs, xyz_error = xyz_error)
                 catch # try to not use the GPU
-                    run_and_load_colmap($path; force_colmap = true, rm_colmapdb = true, use_GPU = false)
+                    run_and_load_colmap($path; from_romi = from_romi, force_colmap = true, rm_colmapdb = true, use_GPU = false)
                 end
             end
             dataset = try
