@@ -222,7 +222,7 @@ function generate_synthetic_plant_scan(dir::String;
         img, right, down, fwd = _render_view(eye, target, w, h, fx, fy, cx, cy, shapes)
 
         name = lpad(i - 1, 5, '0') * "_rgb"
-        Images.save(joinpath(images_dir, name * ".jpg"), img)
+        save(joinpath(images_dir, name * ".jpg"), img)
         open(joinpath(metadata_dir, name * ".json"), "w") do io
             JSON.print(io, Dict("approximate_pose" => [eye[1], eye[2], eye[3], 0.0]))
         end

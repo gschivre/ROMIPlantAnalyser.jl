@@ -212,7 +212,7 @@ Return the feature needed to mask frames.
 function get_features!(feats::Array{Gray{N0f8}, 3}, dataset::ROMIScan, p::ROMIMaskParams)
     @info "Computing features using CPU with $(Threads.nthreads()) threads"
     Threads.@threads for i in axes(feats, 3)
-        im = Images.load(joinpath(dataset.images_dir, dataset.images_list[i]))
+        im = load(joinpath(dataset.images_dir, dataset.images_list[i]))
         img = similar(im)
         copyto!(img, im)
         (p.σ > 0) && imfilter!(img, im, Kernel.gaussian(p.σ))

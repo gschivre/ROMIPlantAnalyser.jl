@@ -61,12 +61,14 @@ end
 
 """
     run_and_load_colmap(project_dir::String;
+                from_romi::Bool = false,
                 force_colmap::Bool = false,
                 rm_colmapdb::Bool = false,
                 use_GPU::Bool = true,
                 xyz_error::Float64 = 3.0)
 
 Run colmap on a separated thread and retrieve the `ROMIScan` object with pose information.
+Use `from_romi = true`, to retreive colmap pose from ROMI .json files.
 Use `force_colmap = true`, to force colmap run even if the `ROMIScan` already exist.
 Use `rm_colmapdb = true`, to delete existing colmap database and force feature extraction.
 Use `xyz_error` to specify the pose prior error in mm.
@@ -304,10 +306,9 @@ function ROMIViewer(data::ROMIScan;
         mf = ROMIMaskedFrames(data, mask_params)
         vol = ROMIVolume(mf, vol_params; use_gpu = use_gpu)
         msh = makemesh(vol, skel_params.t)
-        skl = ROMISkeleton(vol, skel_params)
+        skl = ROMISkeleton(vol, skel_params; root = stem_root) # specify the root
         
         # reconstruct skeleton from stem root/top and branch tips
-        isnothing(stem_root) || update_stem_root!(skl, stem_root)
         isnothing(stem_top) || update_stem_top!(skl, stem_top)
         isnothing(branch_tips) || update_fruit_tips!(skl, branch_tips)
 
@@ -1286,7 +1287,7 @@ end
 # ==========================================
 # Main Application Launcher
 # ==========================================
-function romi_launch(; use_pairs::Bool = true, from_romi::Bool = false, xyz_error::Float64 = 3.0)
+function romi_launch(; use_pairs::Bool = false, from_romi::Bool = false, xyz_error::Float64 = 3.0)
     GLMakie.activate!(; title = "Plant Phyllotaxis Analyser")
     fig = Figure(; size = (1500, 950))
     root_gl = GridLayout(fig[1, 1])
@@ -1309,9 +1310,9 @@ function romi_launch(; use_pairs::Bool = true, from_romi::Bool = false, xyz_erro
             # Run colmap
             colmap_task = Threads.@spawn begin
                 try
-                    run_and_load_colmap($path; from_romi = from_romi, use_pairs = use_pairs, xyz_error = xyz_error)
+                    run_and_load_colmap($path; from_romi = $from_romi, use_pairs = $use_pairs, xyz_error = $xyz_error)
                 catch # try to not use the GPU
-                    run_and_load_colmap($path; from_romi = from_romi, force_colmap = true, rm_colmapdb = true, use_GPU = false)
+                    run_and_load_colmap($path; from_romi = $from_romi, force_colmap = true, rm_colmapdb = true, use_GPU = false)
                 end
             end
             dataset = try
