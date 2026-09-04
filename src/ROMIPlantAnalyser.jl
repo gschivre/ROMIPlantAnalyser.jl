@@ -23,12 +23,14 @@ include("ROMIVoxels.jl")
 include("ROMISkeleton.jl")
 include("ROMIAnglesAndInternodes.jl")
 include("ROMIViewer.jl")
+include("ROMISkeletonEdit.jl")
 include("ROMISyntheticPlant.jl")
 
 export ROMIScan, ROMIFrame, ROMICamera
 export ROMIVolume, ROMISkeleton, ROMIAnglesAndInternodes
 export ROMIMaskParams, ROMIVolumeParams, ROMISkeletonParams, ROMIBboxParams
 export ROMIViewer, ROMIResults, run_and_load_colmap, load_results, export_results, romi_launch
+export romi_launch_skeledit
 
 # Precompile workload for CPU pipeline
 @setup_workload begin
