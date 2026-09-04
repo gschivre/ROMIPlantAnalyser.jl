@@ -1,10 +1,17 @@
-using GeometryBasics, Serialization
-using PythonCall
-const pycolmap = pyimport("pycolmap")
-const np = pyimport("numpy")
+using Serialization
 
 # load ROMI types as this code will be launch on a separate thread
-using ROMIPlantAnalyser: ROMIScan, ROMIFrame, ROMICamera
+using ROMIPlantAnalyser: ROMIPlantAnalyser, ROMIScan, ROMIFrame, ROMICamera
+
+const PythonCall = ROMIPlantAnalyser.PythonCall
+const GeometryBasics = ROMIPlantAnalyser.GeometryBasics
+const pyimport = PythonCall.pyimport
+const pyconvert = PythonCall.pyconvert
+const Mat3d = GeometryBasics.Mat3d
+const Vec3d = GeometryBasics.Vec3d
+
+const pycolmap = pyimport("pycolmap")
+const np = pyimport("numpy")
 
 """
     write_image_pairs(dataset::ROMIScan)

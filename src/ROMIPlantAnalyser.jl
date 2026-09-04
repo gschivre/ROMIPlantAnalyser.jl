@@ -14,6 +14,7 @@ using DataStructures, MarchingCubes
 using GLMakie, FileIO
 using ImageCore, ImageIO, ImageMorphology, ImageFiltering
 using StatsBase, ForwardDiff
+using PythonCall
 using PrecompileTools: @setup_workload, @compile_workload
 
 include("ROMITypes.jl")
