@@ -54,7 +54,7 @@ function get_binary_voxel(path::String, type::String, thr::Int)
         PythonCall.GC.enable()
     end
 
-    return (type == "carving" ? (vol .≥ 1) : (vol .≥ thr))
+    return (type == "carving" ? (vol .≥ 1) : (vol .≥ min(thr, maximum(vol))))
 end
 
 mutable struct ROMISkeletonEdit
