@@ -726,7 +726,7 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     right_gl = GridLayout(gl[1, 2]; tellheight = false, valign = :center)
     colsize!(gl, 2, Makie.Fixed(400))
     colgap!(gl, 15)
-    rowsize!(right_gl, 1, Makie.Fixed(320))
+    rowsize!(right_gl, 1, Makie.Fixed(350))
     Box(right_gl[1, 1]; color = (:bisque, 1.0), strokecolor = :gray80, strokewidth = 1, cornerradius = 8)
     sidebar = GridLayout(right_gl[1, 1]; alignmode = Outside(15, 15, 50, 50))
 
@@ -761,38 +761,44 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     mode = Observable(0) # 0: view, 1: add, 2: delete, 3: top, or 4: root
     mouse_circle = Observable(false) # to draw helper circle arround mouse
     mouse_rad = Observable(0)
-    int_id = Observable(0) # intermediary point ID
+    target_id = Observable(0) # stem target point ID
+    waypt_id = Observable(Int[]) # waypoints IDs
     on(mode) do m
         if m == 1
-            mode_lbl.text[] = "Mode: ADDING (Alt + Click to validate\n\tCtrl + Alt + Click to add stem target point)"
+            mode_lbl.text[] = "Mode: ADDING (Alt + Click to validate\n\tCtrl + Alt + Click to add stem target\n\tShift + Alt + Click to add waypoint))"
             mode_lbl.color[] = parse(Colorant, :dodgerblue)
             mouse_circle[] = true
             mouse_rad[] = 20
-            int_id[] = 0
+            target_id[] = 0
+            waypt_id[] = Int[]
         elseif m == 2
             mode_lbl.text[] = "Mode: DELETING (Alt + Click to validate)"
             mode_lbl.color[] = parse(Colorant, :crimson)
             mouse_circle[] = true
             mouse_rad[] = 40
-            int_id[] = 0
+            target_id[] = 0
+            waypt_id[] = Int[]
         elseif m == 3
             mode_lbl.text[] = "Mode: TOP (Alt + Click to validate)"
             mode_lbl.color[] = parse(Colorant, :olive)
             mouse_circle[] = true
             mouse_rad[] = 20
-            int_id[] = 0
+            target_id[] = 0
+            waypt_id[] = Int[]
         elseif m == 4
             mode_lbl.text[] = "Mode: ROOT (Alt + Click to validate)"
             mode_lbl.color[] = parse(Colorant, :sienna)
             mouse_circle[] = true
             mouse_rad[] = 20
-            int_id[] = 0
+            target_id[] = 0
+            waypt_id[] = Int[]
         else
             mode_lbl.text[] = "Mode: VIEWING"
             mode_lbl.color[] = parse(Colorant, :darkgray)
             mouse_circle[] = false
             mouse_rad[] = 0
-            int_id[] = 0
+            target_id[] = 0
+            waypt_id[] = Int[]
         end
     end
 
@@ -856,12 +862,8 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
             idx = pick_from(Makie.get_scene(ax), mp, boundary_plot; range = 10)
             if idx !== nothing
                 node_id[] = vb.idmap[boundary_coords[idx]]
-                if int_id[] == 0
-                    raw = reverse!(extract_shortest_path(s.u_branch, node_id[]))
-                else
-                    u_int = dijkstra_shortest_path(vb, int_id[]; weighted = true)
-                    raw = reverse!(extract_shortest_path(u_int, node_id[]))
-                end
+                tip = ROMITipID(node_id = node_id[], stem_target = target_id[], int_targets = Tuple(waypt_id[]))
+                raw = _tip_to_stem(s, tip)
                 preview_pt_obs[] = [boundary_pts[idx]]
                 preview_line_obs[] = Point3f.(vb.vox_grid[vb.coords[raw]])
                 preview_color[] = parse(Colorant, :dodgerblue)
@@ -910,14 +912,18 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
         (ev.button == Mouse.left) || return Consume(false)
         if Keyboard.left_alt in events(ax).keyboardstate
             id = to_value(node_id)
-            (id == 0) && return Consume(false)
+            (id == 0) && return Consume(true)
             m = to_value(mode)
             if m == 1
                 if Keyboard.left_control in events(ax).keyboardstate
-                    int_id[] = reverse!(extract_shortest_path(s.u_branch, id))[1]
+                    target_id[] = reverse!(extract_shortest_path(s.u_branch, id))[1]
+                    return Consume(true)
+                elseif Keyboard.left_shift in events(ax).keyboardstate
+                    waypt_id[] = [waypt_id[]; snap_to_centerline(vb, id)]
                     return Consume(true)
                 else
-                    add_fruit_tip!(s, ROMITipID(id, int_id[]))
+                    tip = ROMITipID(node_id = id, stem_target = target_id[], int_targets = Tuple(waypt_id[]))
+                    add_fruit_tip!(s, tip)
                     tips_obs[] = Point3f.(s.tip_points)
                     branchs = map(c -> sample_uniform(c, curve_res), s.branch_curve)
                     branch_obs[] = _build_nan_branches(branchs)
@@ -955,16 +961,26 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     scatter!(ax, preview_pt_obs; markersize = 0.03, markerspace = :data, color = preview_color)
     lines!(ax, preview_line_obs; color = preview_color, linewidth = 2.5, linestyle = :dash)
 
-    # intermediary point
-    int_point = @lift begin
-        if $int_id == 0
+    # stem target point
+    stem_point = @lift begin
+        if $target_id == 0
             return Point3f[]
         else
-            raw_point = vb.vox_grid[vb.coords[$int_id]]
+            raw_point = vb.vox_grid[vb.coords[$target_id]]
             return [Point3f(raw_point)]
         end
     end
-    scatter!(ax, int_point; markersize = 0.03, markerspace = :data, color = :firebrick)
+    scatter!(ax, stem_point; markersize = 0.03, markerspace = :data, color = :firebrick)
+
+    # waypoints
+    waypoints = @lift begin
+        if isempty($waypt_id)
+            return Point3f[]
+        else
+            return [Point3f(vb.vox_grid[vb.coords[i]]) for i in $waypt_id]
+        end
+    end
+    scatter!(ax, waypoints; markersize = 0.03, markerspace = :data, color = :indigo)
 
     # mouse hover circle
     mouse_pos_local = @lift begin

@@ -271,6 +271,31 @@ function ROMIBinaryVolume(vol::ROMIVolume, t::Real, β::Real, νmin::Real; root:
             bbox_origin = Point3d(vol.params.bbox.origin), voxel_size = vol.params.voxel_size, root = root)
 end
 
+# find the closest point with the highest dt given a node id
+function snap_to_centerline(vb::ROMIBinaryVolume, start_id::Int; max_steps::Int = 10_000)
+    current = start_id
+    steps = 0
+    while steps < max_steps
+        I = vb.coords[current]
+        dt_v = vb.dt[I]
+        best_id = current
+        best_dt = dt_v
+        for idx in vb.adj_ptr[current]:(vb.adj_ptr[current + 1] - 1)
+            m = vb.adj_nbr[idx]
+            dt_m = vb.dt[vb.coords[m]]
+            if dt_m > best_dt
+                best_dt = dt_m
+                best_id = m
+            end
+        end
+        (best_id == current) && return current
+        current = best_id
+        steps += 1
+    end
+    @warn "Reached maximum number of iterations" func = "snap_to_centerline"
+    return current
+end
+
 """
     DijkstraShortestPath
 
@@ -288,12 +313,13 @@ struct DijkstraShortestPath
 end
 
 """
-    dijkstra_shortest_path(g::ROMIBinaryVolume, src::Union{Int, AbstractVector{Int}}; weighted::Bool = true)
+    dijkstra_shortest_path(g::ROMIBinaryVolume, src::Union{Int, AbstractVector{Int}}; weighted::Bool = true, target::Union{Nothing, Int} = nothing)
 
 Distance from each node to its nearest source. `src` can be a single node ID or a vector of node ID.
 Could either use edge weights or euclidean distance by specifying `weighted`.
+Specify a `target` node to exit early without exploring the full graph.
 """
-function dijkstra_shortest_path(vb::ROMIBinaryVolume, src::Union{Int, AbstractVector{Int}}; weighted::Bool = true)
+function dijkstra_shortest_path(vb::ROMIBinaryVolume, src::Union{Int, AbstractVector{Int}}; weighted::Bool = true, target::Union{Nothing, Int} = nothing)
     dist = fill(Inf, vb.nv)
     prev = zeros(Int, vb.nv)
     nearest_source = zeros(Int, vb.nv)
@@ -309,6 +335,7 @@ function dijkstra_shortest_path(vb::ROMIBinaryVolume, src::Union{Int, AbstractVe
         v = dequeue!(pq)
         visited[v] && continue
         visited[v] = true
+        ((!isnothing(target)) && (v == target)) && break # shortest distance to target is final because weights are positive!
         for idx in vb.adj_ptr[v]:(vb.adj_ptr[v + 1] - 1)
             m = vb.adj_nbr[idx]
             visited[m] && continue
@@ -1008,10 +1035,11 @@ function findtruncatedtips(vb::ROMIBinaryVolume; min_voxels::Int = 3)
     return tips
 end
 
-# tip ID struct to store an optional intermediary point
-struct ROMITipID
+# tip ID struct to store an optional stem and/or intermediary forced waypoints
+@kwdef struct ROMITipID{N}
     node_id::Int
-    int_node_id::Int # node ID of the stem target
+    stem_target::Int = 0 # node ID of the stem target
+    int_targets::NTuple{N, Int} = () # node IDs of intermediary waypoints
 end
 
 mutable struct ROMISkeleton # mutable to add or remove tips
@@ -1103,7 +1131,7 @@ function ROMISkeleton(vb::ROMIBinaryVolume, params::ROMISkeletonParams)
     stem_id = stem_top.node_id
     stem_point = vb.vox_grid[stem_top.node_idx]
     tip_points = vb.vox_grid[map(m -> m.node_idx, t_max)]
-    tip_ids = map(m -> ROMITipID(m.node_id, 0), t_max)
+    tip_ids = map(m -> ROMITipID(node_id = m.node_id), t_max)
 
     # extract main stem center line via conductance weighted distance field
     u_stem = dijkstra_shortest_path(vb, vb.root_id; weighted = true) # flux travel time
@@ -1170,16 +1198,34 @@ end
 # display
 Base.show(io::IO, s::ROMISkeleton) = print(io, "ROMISkeleton with ", length(s.branchpoints), " branch(es)")
 
+# find the raw path from tip to stem using optional waypoints
+function _tip_to_stem(s::ROMISkeleton, tip::ROMITipID)
+    # the computed path visits waypoints according to their order in tip.int_targets
+    # tip.stem_target → tip.int_targets[1] → ... → tip.node_id
+    waypoints = [tip.int_targets...; tip.node_id]
+
+    raw_branch = if tip.stem_target == 0
+        # this branch default to extract_shortest_path(s.u_branch, tip.node_id)
+        # when (tip.stem_target == 0) && isempty(tip.int_targets)
+        extract_shortest_path(s.u_branch, waypoints[1])
+    else
+        u = dijkstra_shortest_path(s.vb, tip.stem_target; weighted = true, target = waypoints[1])
+        extract_shortest_path(u, waypoints[1])
+    end
+
+    for i in 2:length(waypoints) # the loop is skipped when isempty(tip.int_targets)
+        to, from = waypoints[i - 1], waypoints[i]
+        u = dijkstra_shortest_path(s.vb, to; weighted = true, target = from)
+        seg = extract_shortest_path(u, from)
+        prepend!(raw_branch, seg[1:(end - 1)]) # drop the duplicate junction node
+    end
+    return reverse!(raw_branch) # from stem → tip
+end
+
 # shared logic for (re)deriving one branch against the current stem
 function _recompute_branch!(s::ROMISkeleton, i::Int)
     vb = s.vb
-    if s.tip_ids[i].int_node_id == 0
-        raw_branch = reverse!(extract_shortest_path(s.u_branch, s.tip_ids[i].node_id))
-    else
-        # need to recompute a shortest path!
-        u_int = dijkstra_shortest_path(vb, s.tip_ids[i].int_node_id; weighted = true)
-        raw_branch = reverse!(extract_shortest_path(u_int, s.tip_ids[i].node_id))
-    end
+    raw_branch = _tip_to_stem(s, s.tip_ids[i])
     raw_branchpoint = vb.vox_grid[vb.coords[raw_branch[1]]]
 
     # find where the junction point maps onto the smoothed stem
@@ -1241,7 +1287,7 @@ function update_stem_root!(s::ROMISkeleton, node_id::Int)
         append!(t_max, t_trunc)
     end
     s.tip_points = vb.vox_grid[map(m -> m.node_idx, t_max)]
-    s.tip_ids = map(m -> ROMITipID(m.node_id, 0), t_max)
+    s.tip_ids = map(m -> ROMITipID(node_id = m.node_id), t_max)
 
     # extract main stem center line via conductance weighted distance field
     s.u_stem = dijkstra_shortest_path(vb, vb.root_id; weighted = true) # flux travel time
@@ -1365,7 +1411,7 @@ function add_fruit_tip!(s::ROMISkeleton, tip::ROMITipID)
     (tip in s.tip_ids) && return nothing # already present
 
     idx = findfirst(t -> t.node_id == tip.node_id, s.tip_ids)
-    if !isnothing(idx) # tip exist but as not the same intermediary target
+    if !isnothing(idx) # tip exist but as not the same stem target or waypoints
         s.tip_ids[idx] = tip # update inplace
         _recompute_branch!(s, idx)
     else
@@ -1524,7 +1570,7 @@ function update_threshold!(s::ROMISkeleton, v, t::Real; force::Bool = false)
     
     # Preserve any existing ROMITipIDs (and their intermediary targets)
     existing_tips = Dict(t.node_id => t for t in s.tip_ids)
-    s.tip_ids = map(m -> get(existing_tips, m.node_id, ROMITipID(m.node_id, 0)), t_max)
+    s.tip_ids = map(m -> get(existing_tips, m.node_id, ROMITipID(node_id = m.node_id)), t_max)
 
     # extract main stem center line via conductance weighted distance field
     s.u_stem = dijkstra_shortest_path(vb, vb.root_id; weighted = true) # flux travel time
@@ -1598,7 +1644,7 @@ function update_prominence!(s::ROMISkeleton, h::Real)
 
     # Preserve any existing ROMITipIDs (and their intermediary targets)
     existing_tips = Dict(t.node_id => t for t in s.tip_ids)
-    s.tip_ids = map(m -> get(existing_tips, m.node_id, ROMITipID(m.node_id, 0)), t_max)
+    s.tip_ids = map(m -> get(existing_tips, m.node_id, ROMITipID(node_id = m.node_id)), t_max)
 
     # resize branch containers
     n_tips = length(s.tip_ids)
