@@ -1,5 +1,24 @@
 # provide methods to run the skeleton tuning out of ROMI reconstruction 
 # this will allow to outsource heavy computations outside of the app!
+const iio = pyimport("imageio.v3")
+const np = pyimport("numpy")
+
+# recover reconstruction type and voxel threshold from ROMI
+function get_voxels_metadata(path::String)
+    # locate the Voxels_*.json file in the metadata
+    metadata_dir = joinpath(path, "metadata")
+    vox_json = JSON.parsefile(joinpath(metadata_dir, first(filter(f -> occursin(r"^Voxels_.*\.json$", f), readdir(metadata_dir)))))
+
+    # extract the reconstruction type and the allowed number of missing images
+    rec_type = vox_json["task_params"]["type"]
+    num_img = Int(vox_json["task_params"]["missing_images_threshold"])
+
+    # get the number of images
+    images_dir = joinpath(path, "images")
+    n_img = filter(f -> occursin(r"^\d{5}_rgb\.jpg$", f), readdir(images_dir)) |> length
+
+    return (rec_type, n_img - num_img)
+end
 
 # recover bounding box and voxel size from ROMI results
 function get_romi_grid_params(path::String)
@@ -22,17 +41,14 @@ function get_romi_grid_params(path::String)
 end
 
 # recover thresholded volume from ROMI results
-function get_binary_voxel(path::String)
+function get_binary_voxel(path::String, type::String, thr::Int)
     # locate the Voxels.tiff file
     voxels_dir = joinpath(path, first(filter!(startswith("Voxels_"), readdir(path))))
-    vol = permutedims(Float64.(load(joinpath(voxels_dir, "Voxels.tiff"); verbose = false)), (1, 3, 2))
 
-    # loading the tifffile.py produced file in julia results in wrong numeric value for -1 and +1 values!
-    Threads.@threads for i in eachindex(vol)
-        vol[i] = sign(vol[i])
-    end
+    # loading using tifffile.py
+    vol = pyconvert(Array{Int, 3}, iio.imread(joinpath(voxels_dir, "Voxels.tiff")))
 
-    return vol
+    return (type == "carving" ? (vol .≥ 1) : (vol .≥ thr))
 end
 
 mutable struct ROMISkeletonEdit
@@ -54,17 +70,16 @@ function ROMISkeletonEdit(path::String;
                     verbose::Bool = true)
     if verbose 
         @info "Initializing viewer data..."
-        (skel_params.t != 0.0) && @warn "ROMI plant-3d-vision output binary voxels with negative value for background\n\tusing 0 as a default threshold"
-        skel_params.t = 0.0
+        (skel_params.t != 0.0) && @warn "ROMI plant-3d-vision output binary voxels\n\tthreshold parameter is ignored!"
     end
     with_logger(NullLogger()) do
         bbox, vox_size = get_romi_grid_params(path)
         vox_grid = ROMIVoxelGrid(bbox, vox_size)
-        vol = get_binary_voxel(path)
+        vol = get_binary_voxel(path, get_voxels_metadata(path)...)
         mc = MarchingCubes.MC(vol; x = vox_grid.x, y = vox_grid.y, z = vox_grid.z)
         MarchingCubes.march(mc, skel_params.t)
         msh = MarchingCubes.makemesh(GeometryBasics, mc)
-        skl = ROMISkeleton(vol .> skel_params.t, skel_params;
+        skl = ROMISkeleton(vol, skel_params;
                 bbox_origin = Point3d(bbox.origin), voxel_size = vox_size, root = stem_root)
         
         # reconstruct skeleton from stem root/top and branch tips
