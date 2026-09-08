@@ -8,8 +8,8 @@ function get_voxels_metadata(path::String)
     vox_json = JSON.parsefile(joinpath(metadata_dir, first(filter(f -> occursin(r"^Voxels_.*\.json$", f), readdir(metadata_dir)))))
 
     # extract the reconstruction type and the allowed number of missing images
-    rec_type = vox_json["task_params"]["type"]
-    num_img = Int(vox_json["task_params"]["missing_images_threshold"])
+    rec_type = get(vox_json["task_params"], "type", get(vox_json["task_params"], "method", "averaging"))
+    num_img = Int(get(vox_json["task_params"], "missing_images_threshold", 2))
 
     # get the number of images
     images_dir = joinpath(path, "images")
