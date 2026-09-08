@@ -348,8 +348,9 @@ file or to a ROMI experiment folder.
 """
 function export_results(path::String)
     # load results
-    res = load_results(path)
     f = (isdir(path) ? joinpath(path, basename(rstrip(path, ('/', '\\')) * "_ROMIAnglesAndInternodes.jls")) : path)
+    @assert (isfile(f) && endswith(f, r".jls")) "Wrong path, check that it point directly to the *_ROMIAnglesAndInternodes.jls file or to the folder containing it!"
+    res = load_results(path)
     csv_file = replace(f, ".jls" => ".csv")
     json_file = replace(f, ".jls" => ".json")
 
