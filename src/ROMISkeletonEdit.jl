@@ -328,11 +328,11 @@ function romi_skeleton!(rv::ROMISkeletonEdit, gl::GridLayout; curve_res::Real = 
     end
 
     # Mouse + Keyboard Listener for add/delete
-    on(events(ax).mousebutton, priority = 2) do ev
+    on(events(ax).mousebutton; priority = 2) do ev
         (ev.button == Mouse.left) || return Consume(false)
         if Keyboard.left_alt in events(ax).keyboardstate
             id = to_value(node_id)
-            (id == 0) && return Consume(true)
+            (id == 0) && return Consume(false)
             m = to_value(mode)
             if m == 1
                 if Keyboard.left_control in events(ax).keyboardstate
