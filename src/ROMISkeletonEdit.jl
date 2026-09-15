@@ -103,6 +103,7 @@ mutable struct ROMISkeletonEditState
     idx::Int
     rv::Union{Nothing, ROMISkeletonEdit}
     results::Dict{String, ROMIResults}
+    skip_result::Bool
 end
 
 results_file(state::ROMISkeletonEditState) = joinpath(state.root_path, basename(rstrip(state.root_path, ('/', '\\')) * "_ROMIAnglesAndInternodes.jls"))
@@ -117,20 +118,27 @@ function commit_result!(state::ROMISkeletonEditState, rv::ROMISkeletonEdit)
     id = plant_id(state.paths[state.idx])
     res = get(state.results, id, nothing)
 
-    # use dummy parameters for bbox, mask and volume when none are available
-    result = ROMIResults(ROMIAnglesAndInternodes(rv.skl),
-        (isnothing(res) ? ROMIBboxParams() : res.bbox_params),
-        (isnothing(res) ? ROMIMaskParams() : res.mask_params),
-        (isnothing(res) ? ROMIVolumeParams(rv.bbox, rv.vox_size, 0.0, 0.0, 0.0, 0.0, 0.0) : res.vol_params),
-        copy(rv.skl.params),
-        rv.skl.vb.root_id,
-        rv.skl.stem_top_id,
-        copy(rv.skl.tip_ids)
-    )
-    state.results[id] = result
-    res_file = results_file(state)
-    @info "Saving to $res_file"
-    serialize(res_file, state.results)
+    # use dummy parameters for bbox, mask and volume
+    if (isnothing(res) ? true : is_dummy_volparams(res.vol_params))
+        result = ROMIResults(ROMIAnglesAndInternodes(rv.skl),
+            ROMIBboxParams(),
+            ROMIMaskParams(),
+            ROMIVolumeParams(rv.bbox, rv.vox_size, 0.0, 0.0, 0.0, 0.0, 0.0),
+            copy(rv.skl.params),
+            rv.skl.vb.root_id,
+            rv.skl.stem_top_id,
+            copy(rv.skl.tip_ids)
+        )
+        state.results[id] = result
+        res_file = results_file(state)
+        @info "Saving to $res_file"
+        serialize(res_file, state.results)
+    else
+        # if results already exist and contains real volume parameters then it was obtained from the 
+        # romi_launch pipeline and should be preserved otherwise the viewer will crash when trying to re-open 
+        # the result in romi_launch()!
+        @error "Skipping saving to preserve existing file!"
+    end
     return nothing
 end
 
@@ -631,7 +639,7 @@ function romi_launch_skeledit()
             res = state.results
             rv = try
                 saved = get(res, plant_id(path), nothing)
-                if saved !== nothing
+                if (saved !== nothing) && (is_dummy_volparams())
                     # reopening an already-processed plant
                     ROMISkeletonEdit(path;
                         skel_params = saved.skel_params,
