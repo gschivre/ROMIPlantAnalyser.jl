@@ -269,6 +269,11 @@ function clear_panel!(gl::GridLayout)
     return nothing
 end
 
+# we need a way to spot that the volume parameters are some dummy parameter from the romi_launch_skeledit pipeline
+function is_dummy_volparams(vp::ROMIVolumeParams)
+    return all(==(0.0), (vp.prior_prob, vp.tpr, vp.fpr, vp.τ, vp.λ))
+end
+
 mutable struct ROMIViewer
     data::ROMIScan
 
@@ -1343,7 +1348,7 @@ function romi_launch(; use_pairs::Bool = false, from_romi::Bool = false, xyz_err
             res = state.results
             viewer_task = Threads.@spawn begin
                 saved = get($res, plant_id($path), nothing)
-                if saved !== nothing
+                if (saved !== nothing) && (!is_dummy_volparams(saved.vol_params))
                     # reopening an already-processed plant
                     ROMIViewer($dataset;
                         bbox_params = saved.bbox_params,

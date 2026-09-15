@@ -76,15 +76,14 @@ function ROMISkeletonEdit(path::String;
                     verbose::Bool = true)
     if verbose 
         @info "Initializing viewer data..."
-        ((skel_params.t > 1.0) || (skel_params.t < 0.0)) && @warn "ROMI plant-3d-vision output binary voxels\n\tthreshold parameter should be in [0, 1] default to 0.5!"
-        skel_params.t = 0.5
+        ((skel_params.t > 1.0) || (skel_params.t < 0.0)) && @warn "ROMI plant-3d-vision output binary voxels\n\tthreshold parameter should be in [0, 1] and default to 0.5!"
     end
     with_logger(NullLogger()) do
         bbox, vox_size = get_romi_grid_params(path)
         vox_grid = ROMIVoxelGrid(bbox, vox_size)
         vol = get_binary_voxel(path, get_voxels_metadata(path)...)
         mc = MarchingCubes.MC(1.0 .* vol; x = vox_grid.x, y = vox_grid.y, z = vox_grid.z)
-        MarchingCubes.march(mc, skel_params.t)
+        MarchingCubes.march(mc, 0.5)
         msh = MarchingCubes.makemesh(GeometryBasics, mc)
         skl = ROMISkeleton(vol, skel_params;
                 bbox_origin = Point3d(bbox.origin), voxel_size = vox_size, root = stem_root)
@@ -116,12 +115,13 @@ end
 
 function commit_result!(state::ROMISkeletonEditState, rv::ROMISkeletonEdit)
     id = plant_id(state.paths[state.idx])
+    res = get(state.results, id, nothing)
 
-    # use dummy parameters for bbox, mask and volume
+    # use dummy parameters for bbox, mask and volume when none are available
     result = ROMIResults(ROMIAnglesAndInternodes(rv.skl),
-        ROMIBboxParams(0, 0, 0, 0, 0, 0),
-        ROMIMaskParams(false, 0.0, 0, 0.0, 0.0, 0, 0),
-        ROMIVolumeParams(rv.bbox, rv.vox_size, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (isnothing(res) ? ROMIBboxParams() : res.bbox_params),
+        (isnothing(res) ? ROMIMaskParams() : res.mask_params),
+        (isnothing(res) ? ROMIVolumeParams(rv.bbox, rv.vox_size, 0.0, 0.0, 0.0, 0.0, 0.0) : res.vol_params),
         copy(rv.skl.params),
         rv.skl.vb.root_id,
         rv.skl.stem_top_id,
