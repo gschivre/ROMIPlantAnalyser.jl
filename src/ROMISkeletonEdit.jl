@@ -103,7 +103,6 @@ mutable struct ROMISkeletonEditState
     idx::Int
     rv::Union{Nothing, ROMISkeletonEdit}
     results::Dict{String, ROMIResults}
-    skip_result::Bool
 end
 
 results_file(state::ROMISkeletonEditState) = joinpath(state.root_path, basename(rstrip(state.root_path, ('/', '\\')) * "_ROMIAnglesAndInternodes.jls"))
@@ -137,7 +136,7 @@ function commit_result!(state::ROMISkeletonEditState, rv::ROMISkeletonEdit)
         # if results already exist and contains real volume parameters then it was obtained from the 
         # romi_launch pipeline and should be preserved otherwise the viewer will crash when trying to re-open 
         # the result in romi_launch()!
-        @error "Skipping saving to preserve existing file!"
+        error("Skipping saving to preserve existing file!")
     end
     return nothing
 end
@@ -639,7 +638,7 @@ function romi_launch_skeledit()
             res = state.results
             rv = try
                 saved = get(res, plant_id(path), nothing)
-                if (saved !== nothing) && (is_dummy_volparams())
+                if (saved !== nothing) && (is_dummy_volparams(saved.vol_params))
                     # reopening an already-processed plant
                     ROMISkeletonEdit(path;
                         skel_params = saved.skel_params,
