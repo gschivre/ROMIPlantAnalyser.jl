@@ -100,7 +100,7 @@ function run_colmap(dataset::ROMIScan; use_GPU::Bool = true, use_Pairs::Bool = t
     # Inject pose priors
     extract_pose_priors(dataset)
 
-    if use_pairs
+    if use_Pairs
         # Write image pairs
         write_image_pairs(dataset)
 

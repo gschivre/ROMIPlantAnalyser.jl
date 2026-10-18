@@ -95,7 +95,7 @@ function run_and_load_colmap(project_dir::String;
             if isfile(jls_file)
                 @info "Overwriting existing colmap outputs and $(plant_id)_ROMIScan.jls"
             end
-            sparse_dir = joinpath(abs_project_dir, "sparse")
+            sparse_dir = joinpath(abs_project_dir, "colmap", "sparse")
             rerun_colmap = (!isdir(sparse_dir)) || force_colmap
             (rerun_colmap && rm_colmapdb) && rm(joinpath(abs_project_dir, "colmap", "$(plant_id)_colmap_database.db"); force = true)
             ROMIcolmap_script = joinpath(pkgdir(@__MODULE__), "src", "ROMIcolmap.jl")
@@ -1333,7 +1333,7 @@ function romi_launch(; use_pairs::Bool = false, from_romi::Bool = false, xyz_err
                 try
                     run_and_load_colmap($path; from_romi = $from_romi, use_pairs = $use_pairs, xyz_error = $xyz_error)
                 catch # try to not use the GPU
-                    run_and_load_colmap($path; from_romi = $from_romi, force_colmap = true, rm_colmapdb = true, use_GPU = false)
+                    run_and_load_colmap($path; from_romi = $from_romi, force_colmap = true, rm_colmapdb = true, use_GPU = false, use_pairs = $use_pairs, xyz_error = $xyz_error)
                 end
             end
             dataset = try
