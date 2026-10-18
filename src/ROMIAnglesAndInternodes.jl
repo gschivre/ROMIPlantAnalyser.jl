@@ -147,17 +147,21 @@ end
 """
     emergence_angles(branch_curve::ArcLengthNWSmoothedCurve{F}, s_branch::F, stem_curve::ArcLengthNWSmoothedCurve{F},
                       voxel_size::F; ref_dir::Vec3{F} = Vec3{F}(1, 0, 0), h::F = 2 * voxel_size,
-                      N::Int = round(Int, 1 + 15 * h / voxel_size))
- 
+                      N::Int = round(Int, 1 + 15 * h / voxel_size), s0::Real = 0)
+
 Compute the polar angle θ ∈ [0, π] and the azimuthal orientation φ ∈ [0, 2π) between the
-stem and emerging branch and the propagated uncertainty of (θ,φ) from both the stem and branch tangent standard errors, 
+stem and emerging branch and the propagated uncertainty of (θ,φ) from both the stem and branch tangent standard errors,
 via the delta method with a `ForwardDiff`-computed Jacobian.
- 
+
+The stem tangent is fitted at the junction `s_branch` and the branch tangent at arc length `s0` along the
+branch (moved back if needed so that the fitting window fits in a short branch).
+
 If either fit is too degenerate to trust, all angle/uncertainty fields come back `NaN` with `flagged = true`.
 """
 function emergence_angles(branch_curve::ArcLengthNWSmoothedCurve{F}, s_branch::F, stem_curve::ArcLengthNWSmoothedCurve{F},
                             voxel_size::F; ref_dir::Vec3{F} = Vec3{F}(1, 0, 0),
-                            h::F = 2 * voxel_size, N::Int = round(Int, 1 + 15 * h / voxel_size)) where {F <: AbstractFloat}
+                            h::F = 2 * voxel_size, N::Int = round(Int, 1 + 15 * h / voxel_size),
+                            s0::Real = zero(F)) where {F <: AbstractFloat}
     _nan_result = (polar = F(NaN), azimuth = F(NaN), flagged = true,
                    se_polar = F(NaN), se_azimuth = F(NaN), cov_θϕ = F(NaN))
  
@@ -167,8 +171,9 @@ function emergence_angles(branch_curve::ArcLengthNWSmoothedCurve{F}, s_branch::F
     t0_stem = stem_fit.T
     σ_s = stem_fit.se_T
  
-    # Branch emergence tangent at s = 0
-    branch_fit = emergence_tangent(branch_curve, voxel_size, zero(F), h, N)
+    # Branch emergence tangent at s = s0
+    s0_fit = clamp(F(s0), zero(F), max(branch_curve.L_smooth - 3 * h, zero(F)))
+    branch_fit = emergence_tangent(branch_curve, voxel_size, s0_fit, h, N)
     branch_fit.is_degenerate && return _nan_result
     t0_branch = branch_fit.T
     σ_b = branch_fit.se_T
@@ -224,9 +229,21 @@ struct ROMIAnglesAndInternodes
     flagged::Vector{Bool}
 end
 
-# constructor from ROMISkeleton
-function ROMIAnglesAndInternodes(s::ROMISkeleton)
+"""
+    ROMIAnglesAndInternodes(s::ROMISkeleton; offset::Real = 2.0)
+
+Measure fruit lengths, internodes, emergence angles and divergence angles of a skeleton. The fruit
+emergence tangents are fitted `offset * σbranch` along each fruit (`offset = 0` gives the angles of
+versions before the offset was introduced). The offset is not stored in the results (to keep the
+serialized results format), so results saved before can be loaded and updated by reopening them.
+
+Why an offset: the fruit curve starts on the stem axis, so its first part runs across the stem,
+perpendicular to it, and the Nadaraya-Watson smoothing spreads that segment along the fruit. Fitting
+at the junction keeps the azimuth but pulls the polar angle towards 90°.
+"""
+function ROMIAnglesAndInternodes(s::ROMISkeleton; offset::Real = 2.0)
     voxel_size = Float64(s.vb.voxel_size)
+    s0 = offset * s.params.σbranch
 
     # fruits length
     flen = map(b -> b.L_smooth, s.branch_curve)
@@ -243,7 +260,7 @@ function ROMIAnglesAndInternodes(s::ROMISkeleton)
     cov_θϕ = zeros(n)
     flagged = falses(n)
     Threads.@threads for i in eachindex(s.branchpoints)
-        res = emergence_angles(s.branch_curve[i], s.branchpoints_arclength[i], s.stem_curve, voxel_size)
+        res = emergence_angles(s.branch_curve[i], s.branchpoints_arclength[i], s.stem_curve, voxel_size; s0 = s0)
         polar[i] = res.polar
         azimuth[i] = res.azimuth
         se_polar[i] = res.se_polar
