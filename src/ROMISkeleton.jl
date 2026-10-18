@@ -313,13 +313,16 @@ struct DijkstraShortestPath
 end
 
 """
-    dijkstra_shortest_path(g::ROMIBinaryVolume, src::Union{Int, AbstractVector{Int}}; weighted::Bool = true, target::Union{Nothing, Int} = nothing)
+    dijkstra_shortest_path(g::ROMIBinaryVolume, src::Union{Int, AbstractVector{Int}}; weighted::Bool = true,
+                           target::Union{Nothing, Int} = nothing, max_dist::Real = Inf)
 
 Distance from each node to its nearest source. `src` can be a single node ID or a vector of node ID.
 Could either use edge weights or euclidean distance by specifying `weighted`.
-Specify a `target` node to exit early without exploring the full graph.
+Specify a `target` node to exit early without exploring the full graph, or `max_dist` to only explore
+nodes up to that distance (distances above `max_dist` are then only known to be above `max_dist`).
 """
-function dijkstra_shortest_path(vb::ROMIBinaryVolume, src::Union{Int, AbstractVector{Int}}; weighted::Bool = true, target::Union{Nothing, Int} = nothing)
+function dijkstra_shortest_path(vb::ROMIBinaryVolume, src::Union{Int, AbstractVector{Int}}; weighted::Bool = true,
+                                target::Union{Nothing, Int} = nothing, max_dist::Real = Inf)
     dist = fill(Inf, vb.nv)
     prev = zeros(Int, vb.nv)
     nearest_source = zeros(Int, vb.nv)
@@ -334,6 +337,7 @@ function dijkstra_shortest_path(vb::ROMIBinaryVolume, src::Union{Int, AbstractVe
     while !isempty(pq)
         v = dequeue!(pq)
         visited[v] && continue
+        (dist[v] > max_dist) && break # every node left in the queue is farther
         visited[v] = true
         ((!isnothing(target)) && (v == target)) && break # shortest distance to target is final because weights are positive!
         for idx in vb.adj_ptr[v]:(vb.adj_ptr[v + 1] - 1)
@@ -1094,6 +1098,18 @@ function Base.copy(s::ROMISkeleton)
                 s.params)
 end
 
+"""
+    near_stem_top(vb::ROMIBinaryVolume, stem_top_id::Int, h::Real)
+
+Predicate telling whether a node is closer to the stem top than the prominence `h`, in voxel steps
+along the volume. A fruit tip passing the prominence filter sticks out by at least `h` steps, so such
+nodes belong to the stem end (e.g. the local maximum next to a stem top placed by hand), not to a fruit.
+"""
+function near_stem_top(vb::ROMIBinaryVolume, stem_top_id::Int, h::Real)
+    u = dijkstra_shortest_path(vb, stem_top_id; weighted = false, max_dist = h)
+    return node_id -> u.dist[node_id] < h
+end
+
 # convenient constructors
 function ROMISkeleton(vb::ROMIBinaryVolume, params::ROMISkeletonParams)
     @info "Building skeleton..."
@@ -1129,6 +1145,10 @@ function ROMISkeleton(vb::ROMIBinaryVolume, params::ROMISkeletonParams)
         append!(t_max, t_trunc)
     end
     stem_id = stem_top.node_id
+
+    # drop the other local maxima of the stem end
+    near_top = near_stem_top(vb, stem_id, params.h)
+    filter!(m -> !near_top(m.node_id), t_max)
     stem_point = vb.vox_grid[stem_top.node_idx]
     tip_points = vb.vox_grid[map(m -> m.node_idx, t_max)]
     tip_ids = map(m -> ROMITipID(node_id = m.node_id), t_max)
@@ -1273,19 +1293,11 @@ function update_stem_root!(s::ROMISkeleton, node_id::Int)
     filter!(m -> m.node_idx ∉ Set(vb.tf), t_max)
 
     # find truncated face tip (idealy only one corresponding to the top of the stem)
-    t_trunc = findtruncatedtips(vb)
+    append!(t_max, findtruncatedtips(vb))
 
-    # keep the existing stem top
-    if !isempty(t_trunc)
-        ix_tmax = findfirst(==(s.stem_top_id), map(m -> m.node_id, t_max))
-        ix_ttrunc = findfirst(==(s.stem_top_id), map(m -> m.node_id, t_trunc))
-        if !isnothing(ix_tmax)
-            deleteat!(t_max, ix_tmax)
-        elseif !isnothing(ix_ttrunc)
-            deleteat!(t_trunc, ix_ttrunc)
-        end
-        append!(t_max, t_trunc)
-    end
+    # keep the existing stem top: drop the tips of the stem end
+    near_top = near_stem_top(vb, s.stem_top_id, s.params.h)
+    filter!(m -> !near_top(m.node_id), t_max)
     s.tip_points = vb.vox_grid[map(m -> m.node_idx, t_max)]
     s.tip_ids = map(m -> ROMITipID(node_id = m.node_id), t_max)
 
@@ -1339,6 +1351,18 @@ function update_stem_top!(s::ROMISkeleton, node_id::Int)
     s.stem_top_id = node_id
     s.stem_top = vb.vox_grid[vb.coords[node_id]]
     s.stem = reverse!(extract_shortest_path(s.u_stem, node_id))
+
+    # a fruit cannot end at the stem top (e.g. the stem end detected as a fruit when the top was wrong)
+    near_top = near_stem_top(vb, node_id, s.params.h)
+    keep = map(t -> !near_top(t.node_id), s.tip_ids)
+    if !all(keep)
+        s.tip_ids = s.tip_ids[keep]
+        s.tip_points = s.tip_points[keep]
+        s.branch = s.branch[keep]
+        s.branch_curve = s.branch_curve[keep]
+        s.branchpoints = s.branchpoints[keep]
+        s.branchpoints_arclength = s.branchpoints_arclength[keep]
+    end
 
     # stem changed → branch-attachment distance field must be rebuilt
     s.u_branch = dijkstra_shortest_path(vb, s.stem; weighted = true)
@@ -1566,6 +1590,10 @@ function update_threshold!(s::ROMISkeleton, v, t::Real; force::Bool = false)
     end
     s.stem_top_id = stem_top.node_id
     s.stem_top = vb.vox_grid[stem_top.node_idx]
+
+    # drop the other local maxima of the stem end
+    near_top = near_stem_top(vb, s.stem_top_id, s.params.h)
+    filter!(m -> !near_top(m.node_id), t_max)
     s.tip_points = vb.vox_grid[map(m -> m.node_idx, t_max)]
     
     # Preserve any existing ROMITipIDs (and their intermediary targets)
@@ -1627,19 +1655,11 @@ function update_prominence!(s::ROMISkeleton, h::Real)
     filter!(m -> m.node_idx ∉ Set(vb.tf), t_max)
 
     # find truncated face tip (idealy only one corresponding to the top of the stem)
-    t_trunc = findtruncatedtips(vb)
+    append!(t_max, findtruncatedtips(vb))
 
-    # keep the existing stem top
-    if !isempty(t_trunc)
-        ix_tmax = findfirst(==(s.stem_top_id), map(m -> m.node_id, t_max))
-        ix_ttrunc = findfirst(==(s.stem_top_id), map(m -> m.node_id, t_trunc))
-        if !isnothing(ix_tmax)
-            deleteat!(t_max, ix_tmax)
-        elseif !isnothing(ix_ttrunc)
-            deleteat!(t_trunc, ix_ttrunc)
-        end
-        append!(t_max, t_trunc)
-    end
+    # keep the existing stem top: drop the tips of the stem end
+    near_top = near_stem_top(vb, s.stem_top_id, s.params.h)
+    filter!(m -> !near_top(m.node_id), t_max)
     s.tip_points = vb.vox_grid[map(m -> m.node_idx, t_max)]
 
     # Preserve any existing ROMITipIDs (and their intermediary targets)

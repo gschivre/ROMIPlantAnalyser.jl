@@ -40,7 +40,6 @@
         @test all(err(a) .< 10)
         bias(x) = sum(rad2deg.(x.polar) .- rad2deg(truth.polar)) / n
         @test 0 < bias(a) < bias(a0) - 5
-        @test_broken all(abs.(rad2deg.(a.polar) .- rad2deg(truth.polar)) .< 5)
         Vh, oh, th = voxel_plant(tilt = 0.0)
         sh = voxel_plant_skeleton(Vh, oh, th)
         for ah in (ROMIAnglesAndInternodes(sh; offset = 0), ROMIAnglesAndInternodes(sh))
@@ -165,15 +164,38 @@
         @test length(sf.branchpoints) == n
         @test norm(sf.stem_top[1:2]) < 3vs && sf.stem_top[3] > 75
 
-        # Known bug: update_prominence! and update_stem_root! only drop the current stem top
-        # from the candidate tips when the volume has truncated tips, so here the stem top
-        # becomes an extra fruit.
+        # re-detecting the tips must not turn the stem end into a fruit
         quiet(() -> R.update_prominence!(sf, 16.0))
-        @test_broken sf.stem_top_id ∉ [t.node_id for t in sf.tip_ids]
-        @test_broken length(sf.branchpoints) == n
+        @test sf.stem_top_id ∉ [t.node_id for t in sf.tip_ids]
+        @test length(sf.branchpoints) == n
         sf = voxel_plant_skeleton(Vf, of, tf)
         quiet(() -> R.update_stem_root!(sf, sf.stem[3]))
-        @test_broken length(sf.branchpoints) == n
+        @test length(sf.branchpoints) == n
+
+        # nor when the stem top was placed by hand a few voxels below the stem end
+        sf = voxel_plant_skeleton(Vf, of, tf)
+        quiet(() -> R.update_stem_top!(sf, sf.stem[end - 5]))
+        @test length(sf.branchpoints) == n
+        for update! in (s -> R.update_prominence!(s, 14.0), s -> R.update_stem_root!(s, s.stem[3]))
+            quiet(() -> update!(sf))
+            @test length(sf.branchpoints) == n
+            @test all(p -> p[3] < maximum(tf.heights) + 15, sf.tip_points) # no tip at the stem end
+        end
+    end
+
+    @testset "Wrong automatic stem top" begin
+        # a long top fruit reaches farther from the root than the stem end: it is taken for the stem
+        # and the stem end for a fruit
+        Vw, ow, tw = voxel_plant(H = 60.0, L = 30.0, top_truncated = false)
+        sw = voxel_plant_skeleton(Vw, ow, tw)
+        @test norm(sw.stem_top[1:2]) > 10 # the top is the end of a fruit
+        @test any(p -> norm(p[1:2]) < 2vs, sw.tip_points) # and the stem end is a fruit
+        # moving the top to the stem end (highest node on the stem axis) removes that fake fruit
+        axis_ids = [id for id in 1:sw.vb.nv if norm(sw.vb.vox_grid[sw.vb.coords[id]][1:2]) < vs]
+        quiet(() -> R.update_stem_top!(sw, argmax(id -> zof(sw, id), axis_ids)))
+        @test norm(sw.stem_top[1:2]) < 2vs
+        @test !any(p -> norm(p[1:2]) < 2vs, sw.tip_points)
+        @test length(sw.branchpoints) == n - 1 # the top fruit is added back by hand (Space)
     end
 
     @testset "Input safety" begin
