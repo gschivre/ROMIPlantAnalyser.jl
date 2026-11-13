@@ -99,8 +99,10 @@ function run_and_load_colmap(project_dir::String;
             rerun_colmap = (!isdir(sparse_dir)) || force_colmap
             (rerun_colmap && rm_colmapdb) && rm(joinpath(abs_project_dir, "colmap", "$(plant_id)_colmap_database.db"); force = true)
             ROMIcolmap_script = joinpath(pkgdir(@__MODULE__), "src", "ROMIcolmap.jl")
+            # Single thread: pycolmap's glog crash handler replaces Julia's SIGSEGV handler,
+            # which breaks the GC stop-the-world safepoints as soon as a second thread exists.
             cmd = addenv(
-                `$(Base.julia_cmd()) --project=$(Base.active_project()) $ROMIcolmap_script $project_dir $rerun_colmap $use_GPU $use_pairs $xyz_error`,
+                `$(Base.julia_cmd()) --threads=1,0 --project=$(Base.active_project()) $ROMIcolmap_script $project_dir $rerun_colmap $use_GPU $use_pairs $xyz_error`,
                 "ROMI_SKIP_WARMUP" => "true"
             )
             run(cmd)
