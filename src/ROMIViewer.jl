@@ -250,10 +250,28 @@ function pick_from(scene, mp, target_plot; range = 15)
     return nothing
 end
 
+# Listen to `obs` only for the lifetime of `ax`. Every scene of a Figure shares the same
+# `events`, so a plain `on(events(ax).x)` outlives the axis and keeps everything its closure
+# captures (the whole ROMIViewer of the previous plant) in memory. Listeners registered in
+# `ax.scene.deregister_callbacks` are removed when the axis is deleted by `clear_panel!`.
+function on_axis(f, ax, obs; kwargs...)
+    obsfunc = on(f, obs; kwargs...)
+    push!(ax.scene.deregister_callbacks, obsfunc)
+    return obsfunc
+end
+
 # recursive layout cleaner
 function clear_panel!(gl::GridLayout)
     function clear!(x)
         try
+            # `delete!(block)` detaches the block's scene from the figure but GLMakie's screen
+            # keeps it in `screen.screens`, and with it the block and everything its callbacks
+            # capture (e.g. the previous plant's ROMIViewer via Menu/Textbox/contour plots).
+            if x isa Makie.Block
+                for screen in copy(x.blockscene.current_screens)
+                    delete!(screen, x.blockscene)
+                end
+            end
             empty!(x)
         catch
         finally
@@ -559,7 +577,7 @@ function romi_mask_and_bbox!(rv::ROMIViewer, gl::GridLayout)
     linesegments!(ax, segments_obs; color = :yellow, linewidth = 1.5)
 
     # Keyboard navigation
-    on(events(ax).keyboardbutton) do event
+    on_axis(ax, events(ax).keyboardbutton) do event
         if (event.action == Keyboard.press) || (event.action == Keyboard.repeat)
             if event.key == Keyboard.right
                 idx[] = mod1(idx[] + 1, n)
@@ -810,7 +828,7 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     end
 
     # Keyboard Listener for Toggling Modes
-    on(events(ax).keyboardbutton) do ev
+    on_axis(ax, events(ax).keyboardbutton) do ev
         if (ev.action == Keyboard.press) || (ev.action == Keyboard.repeat)
             if ev.key == Keyboard.space
                 mode[] = (mode[] == 1 ? 0 : 1)
@@ -863,7 +881,7 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     preview_pt_obs = Observable(Point3f[])
     preview_line_obs = Observable(Point3f[])
     preview_color = Observable(parse(Colorant, :transparent))
-    on(events(ax).mouseposition) do mp
+    on_axis(ax, events(ax).mouseposition) do mp
         m = to_value(mode)
         if m == 1
             idx = pick_from(Makie.get_scene(ax), mp, boundary_plot; range = 10)
@@ -915,7 +933,7 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     end
 
     # Mouse + Keyboard Listener for add/delete
-    on(events(ax).mousebutton; priority = 2) do ev
+    on_axis(ax, events(ax).mousebutton; priority = 2) do ev
         (ev.button == Mouse.left) || return Consume(false)
         if Keyboard.left_alt in events(ax).keyboardstate
             id = to_value(node_id)
@@ -990,10 +1008,10 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     scatter!(ax, waypoints; markersize = 0.03, markerspace = :data, color = :indigo)
 
     # mouse hover circle
-    mouse_pos_local = @lift begin
-        mp = $(events(ax).mouseposition)
-        vp = $(ax.scene.viewport)
-        Point2f(mp[1] - vp.origin[1], mp[2] - vp.origin[2])
+    mouse_pos_local = Observable(Point2f(0, 0))
+    on_axis(ax, events(ax).mouseposition) do mp
+        vp = ax.scene.viewport[]
+        mouse_pos_local[] = Point2f(mp[1] - vp.origin[1], mp[2] - vp.origin[2])
     end
     scatter!(ax, mouse_pos_local;
                 markersize = mouse_rad,

@@ -230,7 +230,7 @@ function romi_skeleton!(rv::ROMISkeletonEdit, gl::GridLayout; curve_res::Real = 
     end
 
     # Keyboard Listener for Toggling Modes
-    on(events(ax).keyboardbutton) do ev
+    on_axis(ax, events(ax).keyboardbutton) do ev
         if (ev.action == Keyboard.press) || (ev.action == Keyboard.repeat)
             if ev.key == Keyboard.space
                 mode[] = (mode[] == 1 ? 0 : 1)
@@ -283,7 +283,7 @@ function romi_skeleton!(rv::ROMISkeletonEdit, gl::GridLayout; curve_res::Real = 
     preview_pt_obs = Observable(Point3f[])
     preview_line_obs = Observable(Point3f[])
     preview_color = Observable(parse(Colorant, :transparent))
-    on(events(ax).mouseposition) do mp
+    on_axis(ax, events(ax).mouseposition) do mp
         m = to_value(mode)
         if m == 1
             idx = pick_from(Makie.get_scene(ax), mp, boundary_plot; range = 10)
@@ -335,7 +335,7 @@ function romi_skeleton!(rv::ROMISkeletonEdit, gl::GridLayout; curve_res::Real = 
     end
 
     # Mouse + Keyboard Listener for add/delete
-    on(events(ax).mousebutton; priority = 2) do ev
+    on_axis(ax, events(ax).mousebutton; priority = 2) do ev
         (ev.button == Mouse.left) || return Consume(false)
         if Keyboard.left_alt in events(ax).keyboardstate
             id = to_value(node_id)
@@ -410,10 +410,10 @@ function romi_skeleton!(rv::ROMISkeletonEdit, gl::GridLayout; curve_res::Real = 
     scatter!(ax, waypoints; markersize = 0.03, markerspace = :data, color = :indigo)
 
     # mouse hover circle
-    mouse_pos_local = @lift begin
-        mp = $(events(ax).mouseposition)
-        vp = $(ax.scene.viewport)
-        Point2f(mp[1] - vp.origin[1], mp[2] - vp.origin[2])
+    mouse_pos_local = Observable(Point2f(0, 0))
+    on_axis(ax, events(ax).mouseposition) do mp
+        vp = ax.scene.viewport[]
+        mouse_pos_local[] = Point2f(mp[1] - vp.origin[1], mp[2] - vp.origin[2])
     end
     scatter!(ax, mouse_pos_local;
                 markersize = mouse_rad,
