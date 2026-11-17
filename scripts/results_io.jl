@@ -17,7 +17,7 @@
 # definition of the types it converts.
 
 ENV["ROMI_SKIP_WARMUP"] = "true" # no GLMakie window needed
-using ROMIPlantAnalyser, Serialization, GeometryBasics, Dates
+using ROMIPlantAnalyser, Serialization, GeometryBasics
 const RPA = ROMIPlantAnalyser
 
 const FORMAT = "ROMIResults-plain"
@@ -95,7 +95,7 @@ function dump_results(path::String)
 
     out = replace(f, SUFFIX => PLAIN_SUFFIX)
     serialize(out, Dict{String, Any}("format" => FORMAT, "format_version" => FORMAT_VERSION,
-        "package_version" => string(pkgversion(RPA)), "date" => string(now()), "results" => plain))
+        "package_version" => string(pkgversion(RPA)), "date" => Libc.strftime("%Y-%m-%dT%H:%M:%S", time()), "results" => plain))
     @info "Dumped $(length(plain)) plant(s) to $out"
 end
 
