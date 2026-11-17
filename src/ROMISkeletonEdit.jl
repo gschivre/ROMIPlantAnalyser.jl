@@ -108,8 +108,7 @@ end
 results_file(state::ROMISkeletonEditState) = joinpath(state.root_path, basename(rstrip(state.root_path, ('/', '\\')) * "_ROMIAnglesAndInternodes.jls"))
 
 function load_results!(state::ROMISkeletonEditState)
-    f = results_file(state)
-    state.results = (isfile(f) ? deserialize(f) : Dict{String, ROMIResults}())
+    state.results = load_results(results_file(state))
     return nothing
 end
 
@@ -153,7 +152,7 @@ function romi_skeleton!(rv::ROMISkeletonEdit, gl::GridLayout; curve_res::Real = 
     right_gl = GridLayout(gl[1, 2]; tellheight = false, valign = :center)
     colsize!(gl, 2, Makie.Fixed(400))
     colgap!(gl, 15)
-    rowsize!(right_gl, 1, Makie.Fixed(350))
+    rowsize!(right_gl, 1, Makie.Fixed(420))
     Box(right_gl[1, 1]; color = (:bisque, 1.0), strokecolor = :gray80, strokewidth = 1, cornerradius = 8)
     sidebar = GridLayout(right_gl[1, 1]; alignmode = Outside(15, 15, 50, 50))
 
@@ -167,9 +166,10 @@ function romi_skeleton!(rv::ROMISkeletonEdit, gl::GridLayout; curve_res::Real = 
     sg_skl = SliderGrid(sidebar[2, 1],
         (label = "stem smoothing σstem", range = 0.5:0.1:10, format = "{:.2f}", startvalue = skl_params.σstem),
         (label = "branch smoothing σbranch", range = 0.5:0.1:5, format = "{:.2f}", startvalue = skl_params.σbranch),
-        (label = "tip prominence h", range = 0:01:100, format = "{:.2f}", startvalue = skl_params.h);
+        (label = "tip prominence h", range = 0:01:100, format = "{:.2f}", startvalue = skl_params.h),
+        (label = "fit offset (×σbranch)", range = 0:0.25:5, format = "{:.2f}", startvalue = skl_params.offset);
         tellheight = true, tellwidth = false)
-    σstem, σbranch, h = (s.value for s in sg_skl.sliders[1:3])
+    σstem, σbranch, h, fit_offset = (s.value for s in sg_skl.sliders[1:4])
 
     # Info
     Box(sidebar[3, 1], color = :white, strokecolor = :lightgray, cornerradius = 5)
@@ -177,7 +177,10 @@ function romi_skeleton!(rv::ROMISkeletonEdit, gl::GridLayout; curve_res::Real = 
     Label(instr_gl[1, 1],
         "• Press '⎵': Add Mode\n• Press '\u232B': Delete Mode\n• Press 't': Update stem top\n• Press 'r': Update stem root\n• Press 'Esc': Exit\n• Alt + Left Click: Confirm Action", 
         halign = :left, justification = :left)
-    branch_count_lbl = Label(sidebar[4, 1], "Branches: $(length(s.branchpoints))", halign = :left, font = :bold, tellwidth = false)
+    count_gl = GridLayout(sidebar[4, 1]; tellwidth = false)
+    branch_count_lbl = Label(count_gl[1, 1], "Branches: $(length(s.branchpoints))", halign = :left, font = :bold, tellwidth = false)
+    fits_toggle = Toggle(count_gl[1, 2]; active = false)
+    Label(count_gl[1, 3], "angle fits"; halign = :left)
     mode_lbl = Label(sidebar[5, 1], "Mode: VIEWING"; halign = :right, font = :bold, color = :darkgray, tellwidth = false)
 
     # adjust row gap between label headers and sliders
@@ -276,6 +279,9 @@ function romi_skeleton!(rv::ROMISkeletonEdit, gl::GridLayout; curve_res::Real = 
     end
     lines!(ax, stem_obs; color = :darkgreen, linewidth = 3)
     lines!(ax, branch_obs; color = :orange, linewidth = 2)
+
+    # emergence-angle fits overlay (off by default) and azimuth top view
+    romi_angle_fits!(ax, s, fits_toggle.active, fit_offset, branch_obs, GridLayout(right_gl[2, 1]))
     tips_plot = scatter!(ax, tips_obs; markersize = 0.03, markerspace = :data, color = :coral)
 
     # Hover Callback (Updates preview line/point while mouse moves)
@@ -423,8 +429,8 @@ function romi_skeleton!(rv::ROMISkeletonEdit, gl::GridLayout; curve_res::Real = 
                 transparency = true,
                 visible = mouse_circle)
 
-
-    return nothing
+    # the angle-fits switch, so that the warm-up can compile the overlay (see __init__)
+    return fits_toggle
 end
 
 # ==========================================

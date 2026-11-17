@@ -17,16 +17,21 @@
     # curve reparametrization dense sampling factor
     n_min::Int = 100
     dt_factor::Real = 0.25
+
+    # fruit emergence tangents are fitted offset * σbranch along each fruit (0 ⟹ at the junction)
+    offset::Float64 = 2.0
 end
 function Base.copyto!(dest::ROMISkeletonParams, src::ROMISkeletonParams)
     dest.t = src.t
     dest.β = src.β
+    dest.νmin = src.νmin
     dest.h = src.h
     dest.k_trunc = src.k_trunc
     dest.σstem = src.σstem
     dest.σbranch = src.σbranch
     dest.n_min = src.n_min
     dest.dt_factor = src.dt_factor
+    dest.offset = src.offset
     return dest
 end
 function Base.copy(p::ROMISkeletonParams)

@@ -234,9 +234,23 @@ Below it, three tabs, which you normally go through in order.
 
 #### Tab 3: Skeleton
 
-The sliders set the smoothing of the stem and fruit curves (`σstem`, and `σbranch` for the fruits)
-and the **tip prominence `h`**, which controls how readily fruit tips are detected. The sidebar
-shows the number of fruits found (labelled *Branches* in the app).
+The sliders set the smoothing of the stem and fruit curves (`σstem`, and `σbranch` for the fruits),
+the **tip prominence `h`**, which controls how readily fruit tips are detected, and the **fit
+offset**: how far along each fruit its angles are measured, in units of `σbranch` (see
+[Results and export](#results-and-export)). The sidebar shows the number of fruits found (labelled
+*Branches* in the app).
+
+The **angle fits** switch (off by default) shows how the angles are measured:
+
+- on each fruit, the stretch of curve used for the fit (thick light blue), the fitted curve
+  (dashed) and the fit point;
+- from each junction, the stem direction (green arrow) and the fruit direction (blue arrow), with
+  an arc for the polar angle θ between them and a `#i θ=…°` label (red when the fit is flagged);
+- under the sidebar, a top view down the stem: fruit `i` sits at its azimuth φ and at radius `i`,
+  and consecutive fruits are joined by an arc that sweeps their divergence angle.
+
+Everything updates as you move the sliders or edit the skeleton, so you can see the effect of the
+fit offset before saving.
 
 Editing uses keyboard modes. Every edit is confirmed with **Alt + Left click** (a plain click
 still rotates the view):
@@ -311,11 +325,32 @@ row per fruit, ordered from the bottom of the stem upwards:
 | `div_angle (°)`                | divergence angle from the previous fruit                          |
 | `chirality`                    | phyllotaxis direction: `cw`, `ccw` or `ambiguous` (first row only)|
 
-Fruit angles are measured slightly away from the stem, at twice the fruit smoothing scale
-(`2 × σbranch`, 3 mm with the default settings), because the reconstructed fruit curve first
-runs across the stem. The azimuth is accurate, but the polar angle of fruits that are not at 90°
-from the stem is still biased towards 90°. Results saved by earlier versions (measured at the
-stem) still open: reopen a stem and click **Save** to update its angles.
+Fruit angles are measured slightly away from the stem, by default at twice the fruit smoothing
+scale (fit offset `2 × σbranch`, 3 mm with the default settings), because the reconstructed fruit
+curve first runs across the stem. The azimuth is accurate, but the polar angle of fruits that are
+not at 90° from the stem is still biased towards 90°. The fit offset is saved with each stem's
+skeleton settings.
+
+#### Results saved by an earlier version
+
+A `.jls` results file can only be opened by a version of ROMIPlantAnalyser that stores the same
+settings. When the settings change (as when the fit offset was added), convert the file with
+`scripts/results_io.jl`: first, **with the version that saved it**, dump it to a plain format
+that does not depend on the package:
+
+```bash
+julia --project scripts/results_io.jl dump /path/to/experiment_folder
+```
+
+then, after updating ROMIPlantAnalyser, rebuild the results file from that dump:
+
+```bash
+julia --project scripts/results_io.jl restore /path/to/experiment_folder
+```
+
+Settings that did not exist in the old version take their default value. The original file is
+kept as `.jls.bak`. Reopen a stem and click **Save** to recompute its angles with the current
+version.
 
 To work with the results directly in Julia:
 

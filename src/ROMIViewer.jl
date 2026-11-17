@@ -108,6 +108,11 @@ function run_and_load_colmap(project_dir::String;
             run(cmd)
         end
         dataset = deserialize(jls_file)
+
+        # the scan folder was moved since the scan was cached
+        if dataset.project_dir != rstrip(abs_project_dir, ('/', '\\'))
+            dataset = ROMIScan(dataset, abs_project_dir)
+        end
     end
     return dataset
 end
@@ -362,7 +367,16 @@ file or to a ROMI experiment folder.
 """
 function load_results(path::String)
     f = (isdir(path) ? joinpath(path, basename(rstrip(path, ('/', '\\')) * "_ROMIAnglesAndInternodes.jls")) : path)
-    return (isfile(f) ? deserialize(f) : Dict{String, ROMIResults}())
+    isfile(f) || return Dict{String, ROMIResults}()
+    res = try
+        deserialize(f)
+    catch err
+        error("Could not read $f ($(sprint(showerror, err))). It was probably saved by an older version of " *
+              "ROMIPlantAnalyser: convert it with `scripts/results_io.jl dump` using that version, then " *
+              "`scripts/results_io.jl restore` with this one.")
+    end
+    res isa Dict{String, ROMIResults} || error("$f does not contain ROMIPlantAnalyser results (got a $(typeof(res)))")
+    return res
 end
 
 """
@@ -413,8 +427,7 @@ plant_id(path::String) = basename(rstrip(path, ('/', '\\')))
 results_file(state::ROMIViewerState) = joinpath(state.root_path, basename(rstrip(state.root_path, ('/', '\\')) * "_ROMIAnglesAndInternodes.jls"))
 
 function load_results!(state::ROMIViewerState)
-    f = results_file(state)
-    state.results = (isfile(f) ? deserialize(f) : Dict{String, ROMIResults}())
+    state.results = load_results(results_file(state))
     return nothing
 end
 
@@ -741,6 +754,124 @@ end
 # ==========================================
 # TAB 3: Skeleton Extraction
 # ==========================================
+"""
+    romi_angle_fits!(ax::Axis3, s::ROMISkeleton, show::Observable, offset::Observable, refresh::Observable,
+                     polar_gl::GridLayout)
+
+Display of the emergence-angle fits, shown while `show` is true and recomputed when `offset` (in units of
+σbranch, stored in `s.params.offset`) or `refresh` (any skeleton change) is updated:
+- in `ax`, for each fruit: the fruit fitting window (thick blue) and the fitted quadratic (dashed), the
+  stem (green) and fruit (blue) tangents drawn from the junction, an arc for the polar angle θ between
+  them and a "#i θ" label (red when the fit is flagged);
+- in `polar_gl`, a top view down the stem: fruit i at angle φ (azimuth) and radius i, consecutive fruits
+  joined by an arc sweeping their divergence angle.
+"""
+function romi_angle_fits!(ax::Axis3, s::ROMISkeleton, show::Observable, offset::Observable,
+                          refresh::Observable, polar_gl::GridLayout)
+    nan3 = Point3f(NaN, NaN, NaN)
+    window_obs = Observable(Point3f[])
+    quad_obs = Observable(Point3f[])
+    fit_pts_obs = Observable(Point3f[])
+    arc_obs = Observable(Point3f[])
+    green, blue, red = RGBAf(0, 0.39, 0, 1), RGBAf(0.12, 0.56, 1, 1), RGBAf(0.86, 0.08, 0.24, 1)
+
+    lines!(ax, window_obs; color = (:dodgerblue, 0.5), linewidth = 9, visible = show)
+    lines!(ax, quad_obs; color = :navy, linewidth = 1.5, linestyle = :dash, visible = show)
+    scatter!(ax, fit_pts_obs; markersize = 9, color = :navy, strokecolor = :white, strokewidth = 1, overdraw = true, visible = show)
+    lines!(ax, arc_obs; color = :black, linewidth = 1.5, visible = show)
+    L = Observable(1.0f0) # arrow length
+    # arrows and labels have several inputs that must change together: updated with Makie.update!
+    arrows_plot = arrows3d!(ax, Point3f[], Vec3f[]; color = RGBAf[], markerscale = L,
+        shaftradius = 0.03, tipradius = 0.08, tiplength = 0.2, visible = show)
+    labels_plot = text!(ax, Point3f[]; text = String[], color = RGBAf[], fontsize = 13, font = :bold,
+        align = (:left, :bottom), offset = (8, 6), glowcolor = (:white, 0.9), glowwidth = 2, visible = show)
+
+    pax = Ref{Any}(nothing)
+    function update_polar!(g)
+        isnothing(pax[]) && return nothing
+        p = pax[]
+        empty!(p)
+        n = length(g)
+        φ = [x.azimuth for x in g]
+        ok = findall(!isnan, φ)
+        p.rlimits[] = (0, n + 1)
+        p.rticks[] = (1:n, string.(1:n))
+        isempty(ok) && return nothing
+
+        # divergence arcs between consecutive fruits, swept in the stem chirality direction
+        cw = (stem_chirality(φ) == :cw)
+        arc_θ, arc_r = Float64[], Float64[]
+        mid_θ, mid_r, mid_txt = Float64[], Float64[], String[]
+        for i in 1:(n - 1)
+            (isnan(φ[i]) || isnan(φ[i + 1])) && continue
+            δ = (cw ? -mod2pi(φ[i] - φ[i + 1]) : mod2pi(φ[i + 1] - φ[i]))
+            τ = range(0, 1; length = 40)
+            append!(arc_θ, φ[i] .+ τ .* δ, NaN)
+            append!(arc_r, i .+ τ, NaN)
+            push!(mid_θ, φ[i] + δ / 2)
+            push!(mid_r, i + 0.5)
+            push!(mid_txt, "$(round(Int, rad2deg(abs(δ))))°")
+        end
+        lines!(p, arc_θ, arc_r; color = :gray50, linewidth = 1.5)
+        text!(p, mid_θ, mid_r; text = mid_txt, color = :gray30, fontsize = 10, align = (:center, :center))
+        scatter!(p, φ[ok], Float64.(ok); color = [g[i].flagged ? red : blue for i in ok], markersize = 10)
+        text!(p, φ[ok], Float64.(ok); text = string.(ok), fontsize = 11, font = :bold, offset = (6, 4))
+        return nothing
+    end
+
+    function update!()
+        show[] || return nothing
+        s.params.offset = offset[]
+        g = emergence_fit_geometry(s; offset = offset[])
+        L[] = 4 * s.params.σbranch
+        window, quad, fit_pts, arc = Point3f[], Point3f[], Point3f[], Point3f[]
+        org, dir, col = Point3f[], Vec3f[], RGBAf[]
+        lpos, ltxt, lcol = Point3f[], String[], RGBAf[]
+        for (i, x) in enumerate(g)
+            append!(window, Point3f.(x.window), (nan3,))
+            append!(quad, Point3f.(x.quadratic), (nan3,))
+            isnan(x.p_fit[1]) || push!(fit_pts, Point3f(x.p_fit))
+            stem_ok, branch_ok = !isnan(x.t_stem[1]), !isnan(x.t_branch[1])
+            stem_ok && (push!(org, x.p_junction); push!(dir, L[] * x.t_stem); push!(col, green))
+            branch_ok && (push!(org, x.p_junction); push!(dir, L[] * x.t_branch); push!(col, blue))
+            if stem_ok && branch_ok && !isnan(x.polar) && (x.polar > 1e-3)
+                # polar angle arc between the two tangents (spherical interpolation)
+                for τ in range(0, 1; length = 30)
+                    d = (sin((1 - τ) * x.polar) * x.t_stem + sin(τ * x.polar) * x.t_branch) / sin(x.polar)
+                    push!(arc, x.p_junction + 0.5f0 * L[] * d)
+                end
+                push!(arc, nan3)
+            end
+            push!(lpos, x.p_junction + L[] * (branch_ok ? x.t_branch : Vec3d(0, 0, 1)))
+            push!(ltxt, x.flagged ? "#$i flagged" : "#$i θ=$(round(Int, rad2deg(x.polar)))°")
+            push!(lcol, x.flagged ? red : RGBAf(0, 0, 0, 1))
+        end
+        window_obs[], quad_obs[], fit_pts_obs[], arc_obs[] = window, quad, fit_pts, arc
+        Makie.update!(arrows_plot; arg1 = org, arg2 = dir, color = col)
+        Makie.update!(labels_plot; arg1 = lpos, text = ltxt, color = lcol)
+        update_polar!(g)
+        return nothing
+    end
+
+    on(show) do sh
+        if sh
+            pax[] = PolarAxis(polar_gl[1, 1]; title = "Azimuth φ, top view (radius = fruit #)",
+                height = 280, rticklabelsvisible = false, thetaticks = Makie.AngularTicks(180 / π, "°"))
+            update!()
+        elseif !isnothing(pax[])
+            delete!(pax[])
+            pax[] = nothing
+            Makie.trim!(polar_gl)
+        end
+    end
+    on(_ -> update!(), offset)
+    on(_ -> update!(), refresh)
+    on(offset) do v
+        s.params.offset = v
+    end
+    return nothing
+end
+
 function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     rv.msh = makemesh(rv.vol, rv.skl.params.t)
     s = rv.skl
@@ -751,7 +882,7 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     right_gl = GridLayout(gl[1, 2]; tellheight = false, valign = :center)
     colsize!(gl, 2, Makie.Fixed(400))
     colgap!(gl, 15)
-    rowsize!(right_gl, 1, Makie.Fixed(350))
+    rowsize!(right_gl, 1, Makie.Fixed(420))
     Box(right_gl[1, 1]; color = (:bisque, 1.0), strokecolor = :gray80, strokewidth = 1, cornerradius = 8)
     sidebar = GridLayout(right_gl[1, 1]; alignmode = Outside(15, 15, 50, 50))
 
@@ -765,9 +896,10 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     sg_skl = SliderGrid(sidebar[2, 1],
         (label = "stem smoothing σstem", range = 0.5:0.1:10, format = "{:.2f}", startvalue = skl_params.σstem),
         (label = "branch smoothing σbranch", range = 0.5:0.1:5, format = "{:.2f}", startvalue = skl_params.σbranch),
-        (label = "tip prominence h", range = 0:01:100, format = "{:.2f}", startvalue = skl_params.h);
+        (label = "tip prominence h", range = 0:01:100, format = "{:.2f}", startvalue = skl_params.h),
+        (label = "fit offset (×σbranch)", range = 0:0.25:5, format = "{:.2f}", startvalue = skl_params.offset);
         tellheight = true, tellwidth = false)
-    σstem, σbranch, h = (s.value for s in sg_skl.sliders[1:3])
+    σstem, σbranch, h, fit_offset = (s.value for s in sg_skl.sliders[1:4])
 
     # Info
     Box(sidebar[3, 1], color = :white, strokecolor = :lightgray, cornerradius = 5)
@@ -775,7 +907,10 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     Label(instr_gl[1, 1],
         "• Press '⎵': Add Mode\n• Press '\u232B': Delete Mode\n• Press 't': Update stem top\n• Press 'r': Update stem root\n• Press 'Esc': Exit\n• Alt + Left Click: Confirm Action", 
         halign = :left, justification = :left)
-    branch_count_lbl = Label(sidebar[4, 1], "Branches: $(length(s.branchpoints))", halign = :left, font = :bold, tellwidth = false)
+    count_gl = GridLayout(sidebar[4, 1]; tellwidth = false)
+    branch_count_lbl = Label(count_gl[1, 1], "Branches: $(length(s.branchpoints))", halign = :left, font = :bold, tellwidth = false)
+    fits_toggle = Toggle(count_gl[1, 2]; active = false)
+    Label(count_gl[1, 3], "angle fits"; halign = :left)
     mode_lbl = Label(sidebar[5, 1], "Mode: VIEWING"; halign = :right, font = :bold, color = :darkgray, tellwidth = false)
 
     # adjust row gap between label headers and sliders
@@ -874,6 +1009,9 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
     end
     lines!(ax, stem_obs; color = :darkgreen, linewidth = 3)
     lines!(ax, branch_obs; color = :orange, linewidth = 2)
+
+    # emergence-angle fits overlay (off by default) and azimuth top view
+    romi_angle_fits!(ax, s, fits_toggle.active, fit_offset, branch_obs, GridLayout(right_gl[2, 1]))
     tips_plot = scatter!(ax, tips_obs; markersize = 0.03, markerspace = :data, color = :coral)
 
     # Hover Callback (Updates preview line/point while mouse moves)
@@ -1021,8 +1159,8 @@ function romi_skeleton!(rv::ROMIViewer, gl::GridLayout; curve_res::Real = 0.1)
                 transparency = true,
                 visible = mouse_circle)
 
-
-    return nothing
+    # the angle-fits switch, so that the warm-up can compile the overlay (see __init__)
+    return fits_toggle
 end
 
 # ==========================================

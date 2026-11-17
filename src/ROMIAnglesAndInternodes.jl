@@ -3,14 +3,16 @@
 
 Weighted local polynomial fit of `curve` around `s0` in the dimensionless coordinate
 u = (s-s0)/h with Gaussian kernel weights exp(-u²/2). Returns the tangent estimate `T`
-(unit vector), its angular standard error `se_T` (radians).
+(unit vector), its angular standard error `se_T` (radians), the fitted coefficients `coef`
+(row d+1 holds the 3D coefficient of u^d) and the fitting window `[s_min, s_max]`.
 """
 function _local_poly_fit(curve::ArcLengthNWSmoothedCurve{F}, s0::F, h::F, degree::Int, N::Int) where {F <: AbstractFloat}
     s_min = max(zero(F), s0 - 3 * h)
     s_max = min(curve.L_smooth, s0 + 3 * h)
  
     if (s_max - s_min) < (h / 10)
-        return (T = F(NaN), se_T = F(NaN), is_degenerate = true)
+        return (T = Vec3{F}(NaN, NaN, NaN), se_T = F(NaN), is_degenerate = true,
+                coef = fill(F(NaN), degree + 1, 3), s0 = s0, h = h, s_min = s_min, s_max = s_max)
     end
  
     s_samples = range(s_min, s_max; length = N)
@@ -58,7 +60,7 @@ function _local_poly_fit(curve::ArcLengthNWSmoothedCurve{F}, s0::F, h::F, degree
     # perpendicular components each with variance se_β1² — hence the √2.
     se_T = F(sqrt(2)) * se_β1 / norm_β1
  
-    return (T = T, se_T = se_T, is_degenerate = false)
+    return (T = T, se_T = se_T, is_degenerate = false, coef = V, s0 = s0, h = h, s_min = s_min, s_max = s_max)
 end
 
 """
@@ -145,6 +147,21 @@ function _theta_phi_jacobian(t0_stem::Vec3{F}, t0_branch::Vec3{F}, ref_dir::Vec3
 end
  
 """
+    _emergence_fits(branch_curve, s_branch, stem_curve, voxel_size, h, N, s0)
+
+Stem tangent fit at the junction `s_branch` and branch tangent fit at arc length `s0` along the branch
+(moved back if needed so that the fitting window fits in a short branch). Shared by `emergence_angles`
+and the display of the fits, so that both use the same fits.
+"""
+function _emergence_fits(branch_curve::ArcLengthNWSmoothedCurve{F}, s_branch::F, stem_curve::ArcLengthNWSmoothedCurve{F},
+                         voxel_size::F, h::F, N::Int, s0::Real) where {F <: AbstractFloat}
+    stem_fit = emergence_tangent(stem_curve, voxel_size, s_branch, h, N)
+    s0_fit = clamp(F(s0), zero(F), max(branch_curve.L_smooth - 3 * h, zero(F)))
+    branch_fit = emergence_tangent(branch_curve, voxel_size, s0_fit, h, N)
+    return stem_fit, branch_fit
+end
+
+"""
     emergence_angles(branch_curve::ArcLengthNWSmoothedCurve{F}, s_branch::F, stem_curve::ArcLengthNWSmoothedCurve{F},
                       voxel_size::F; ref_dir::Vec3{F} = Vec3{F}(1, 0, 0), h::F = 2 * voxel_size,
                       N::Int = round(Int, 1 + 15 * h / voxel_size), s0::Real = 0)
@@ -165,15 +182,11 @@ function emergence_angles(branch_curve::ArcLengthNWSmoothedCurve{F}, s_branch::F
     _nan_result = (polar = F(NaN), azimuth = F(NaN), flagged = true,
                    se_polar = F(NaN), se_azimuth = F(NaN), cov_θϕ = F(NaN))
  
-    # Stem tangent at junction s_branch
-    stem_fit = emergence_tangent(stem_curve, voxel_size, s_branch, h, N)
+    # Stem tangent at junction s_branch and branch emergence tangent at s = s0
+    stem_fit, branch_fit = _emergence_fits(branch_curve, s_branch, stem_curve, voxel_size, h, N, s0)
     stem_fit.is_degenerate && return _nan_result
     t0_stem = stem_fit.T
     σ_s = stem_fit.se_T
- 
-    # Branch emergence tangent at s = s0
-    s0_fit = clamp(F(s0), zero(F), max(branch_curve.L_smooth - 3 * h, zero(F)))
-    branch_fit = emergence_tangent(branch_curve, voxel_size, s0_fit, h, N)
     branch_fit.is_degenerate && return _nan_result
     t0_branch = branch_fit.T
     σ_b = branch_fit.se_T
@@ -230,18 +243,18 @@ struct ROMIAnglesAndInternodes
 end
 
 """
-    ROMIAnglesAndInternodes(s::ROMISkeleton; offset::Real = 2.0)
+    ROMIAnglesAndInternodes(s::ROMISkeleton; offset::Real = s.params.offset)
 
 Measure fruit lengths, internodes, emergence angles and divergence angles of a skeleton. The fruit
 emergence tangents are fitted `offset * σbranch` along each fruit (`offset = 0` gives the angles of
-versions before the offset was introduced). The offset is not stored in the results (to keep the
-serialized results format), so results saved before can be loaded and updated by reopening them.
+versions before the offset was introduced). The offset is a skeleton parameter, so it is saved with
+the results.
 
 Why an offset: the fruit curve starts on the stem axis, so its first part runs across the stem,
 perpendicular to it, and the Nadaraya-Watson smoothing spreads that segment along the fruit. Fitting
 at the junction keeps the azimuth but pulls the polar angle towards 90°.
 """
-function ROMIAnglesAndInternodes(s::ROMISkeleton; offset::Real = 2.0)
+function ROMIAnglesAndInternodes(s::ROMISkeleton; offset::Real = s.params.offset)
     voxel_size = Float64(s.vb.voxel_size)
     s0 = offset * s.params.σbranch
 
@@ -277,4 +290,45 @@ function ROMIAnglesAndInternodes(s::ROMISkeleton; offset::Real = 2.0)
         div_angles = rad2deg.(mod2pi.(diff(azimuth)))
     end
     return ROMIAnglesAndInternodes(flen, polar, azimuth, internodes, div_angles, orientation, se_polar, se_azimuth, cov_θϕ, flagged)
+end
+
+"""
+    emergence_fit_geometry(s::ROMISkeleton; offset::Real = s.params.offset, npts::Int = 25)
+
+Geometry of the stem and fruit tangent fits behind the emergence angles, for display. For each fruit:
+the junction point `p_junction`, the stem and fruit unit tangents `t_stem` and `t_branch`, the fruit
+fitting point `p_fit` (at `offset * σbranch` along the fruit), the fruit curve over the fitting window
+`window` and the fitted quadratic over the same window `quadratic` (both `npts` points), and the polar
+and azimuth angles (radian, `NaN` if the fit is degenerate) with the `flagged` status.
+"""
+function emergence_fit_geometry(s::ROMISkeleton; offset::Real = s.params.offset, npts::Int = 25)
+    voxel_size = Float64(s.vb.voxel_size)
+    h = 2 * voxel_size
+    N = round(Int, 1 + 15 * h / voxel_size)
+    s0 = offset * s.params.σbranch
+    nan3 = Point3d(NaN, NaN, NaN)
+    return map(eachindex(s.branchpoints)) do i
+        bc = s.branch_curve[i]
+        stem_fit, fit = with_logger(NullLogger()) do # degenerate fits are already reported as flagged
+            _emergence_fits(bc, s.branchpoints_arclength[i], s.stem_curve, voxel_size, h, N, s0)
+        end
+        res = with_logger(NullLogger()) do
+            emergence_angles(bc, s.branchpoints_arclength[i], s.stem_curve, voxel_size; s0 = s0)
+        end
+        if fit.is_degenerate
+            window = quadratic = fill(nan3, npts)
+            p_fit = nan3
+        else
+            ss = range(fit.s_min, fit.s_max; length = npts)
+            window = [Point3d(bc(si)) for si in ss]
+            quadratic = map(ss) do si
+                u = (si - fit.s0) / fit.h
+                Point3d((fit.coef[1, :] .+ u .* fit.coef[2, :] .+ u ^ 2 .* fit.coef[3, :])...)
+            end
+            p_fit = Point3d(bc(fit.s0))
+        end
+        (p_junction = Point3d(s.branchpoints[i]), t_stem = Vec3d(stem_fit.T), t_branch = Vec3d(fit.T),
+         p_fit = p_fit, window = window, quadratic = quadratic,
+         polar = res.polar, azimuth = res.azimuth, flagged = res.flagged)
+    end
 end

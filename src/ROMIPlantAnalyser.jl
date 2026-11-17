@@ -36,7 +36,9 @@ export romi_launch_skeledit
 @setup_workload begin
     scan, vol_params, bbox_params = generate_synthetic_plant_scan(mktempdir())
     @compile_workload begin
-        ROMIAnglesAndInternodes(ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, use_gpu = false, verbose = false).skl)
+        skl = ROMIViewer(scan; bbox_params = bbox_params, vol_params = vol_params, use_gpu = false, verbose = false).skl
+        ROMIAnglesAndInternodes(skl)
+        emergence_fit_geometry(skl) # angle-fit overlay geometry
     end
 end
 
@@ -58,8 +60,13 @@ function __init__()
         gl_skl = GridLayout(fig[1, 3])
         romi_mask_and_bbox!(rv, gl_mask)
         romi_volume!(rv, gl_vol)
-        romi_skeleton!(rv, gl_skl)
+        fits_toggle = romi_skeleton!(rv, gl_skl)
         Makie.colorbuffer(fig; px_per_unit = 1)
+        # angle-fit overlay (off by default): build and render it once so that its plots
+        # (arrows, polar axis, text) and their shaders are compiled before the first click
+        fits_toggle.active[] = true
+        Makie.colorbuffer(fig; px_per_unit = 1)
+        fits_toggle.active[] = false
         Makie.second_resolve(fig, :gl_renderobject)
         CUDA.unsafe_free!(rv.vol)
         rv = nothing

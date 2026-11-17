@@ -131,6 +131,16 @@ struct ROMIScan
             Vector{ROMIFrame{Int, Float64}}(undef, length(images_list))
         )
     end
+
+    # the same scan with its folder moved to `project_dir` (a cached scan stores absolute paths)
+    function ROMIScan(scan::ROMIScan, project_dir::AbstractString)
+        new_dir = abspath(rstrip(project_dir, ('/', '\\')))
+        old_dir = scan.project_dir
+        moved(p) = (startswith(p, old_dir) ? new_dir * p[(ncodeunits(old_dir) + 1):end] : p)
+        new(new_dir, scan.plant_id, moved(scan.images_dir), moved(scan.metadata_dir), scan.images_list, scan.cnc_xyz,
+            moved(scan.db_path), moved(scan.pairs_path), moved(scan.poses_path), moved(scan.sparse_dir),
+            scan.camera_model, scan.std_xyz, scan.frames)
+    end
 end
 Base.length(d::ROMIScan) = length(d.frames)
 Base.show(io::IO, d::ROMIScan) = print(io, "ROMIScan with ", length(d), " frames")

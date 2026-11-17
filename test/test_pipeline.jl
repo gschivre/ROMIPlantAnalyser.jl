@@ -26,6 +26,20 @@
         rm(joinpath(broken_dir, "plant_B", "metadata", "images", "00003_rgb.json"))
         @test !R.is_valid_scan_folder(joinpath(broken_dir, "plant_B")) # an image without metadata
         @test_throws AssertionError ROMIScan(joinpath(broken_dir, "plant_B"))
+
+        # a cached scan whose folder was moved: every path follows the folder
+        moved_dir = joinpath(mktempdir(), "plant_A")
+        cp(scan_dir, moved_dir)
+        serialize(joinpath(moved_dir, "plant_A_ROMIScan.jls"), scan) # cache written before the move
+        moved = run_and_load_colmap(moved_dir * "/")
+        @test moved.project_dir == moved_dir
+        for f in (:images_dir, :metadata_dir, :db_path, :pairs_path, :poses_path, :sparse_dir)
+            @test getfield(moved, f) == replace(getfield(scan, f), scan_dir => moved_dir)
+        end
+        @test isfile(joinpath(moved.images_dir, moved.images_list[1]))
+        @test isequal(moved.frames, scan.frames) && moved.images_list == scan.images_list
+        same = ROMIScan(scan, scan_dir) # not moved: unchanged
+        @test all(f -> getfield(same, f) == getfield(scan, f), fieldnames(ROMIScan))
     end
 
     @testset "Camera poses from plant-3d-vision" begin
@@ -152,11 +166,51 @@
             @test a2.div_angles ≈ a.div_angles
         end
 
+        @testset "Fit offset parameter and fit geometry" begin
+            p = R.ROMISkeletonParams(νmin = 0.02, offset = 1.5)
+            @test copy(p).νmin == 0.02 && copy(p).offset == 1.5
+            @test saved.skel_params.offset == 2.0
+            # the offset used by default is the skeleton one
+            s.params.offset = 0.0
+            @test ROMIAnglesAndInternodes(s).polar == ROMIAnglesAndInternodes(s; offset = 0).polar
+            s.params.offset = 2.0
+            # the displayed fits are the ones behind the angles
+            for off in (0.0, 2.0)
+                g = R.emergence_fit_geometry(s; offset = off)
+                ai = ROMIAnglesAndInternodes(s; offset = off)
+                @test [x.polar for x in g] == ai.polar && [x.azimuth for x in g] == ai.azimuth
+                @test all(x -> acosd(clamp(dot(x.t_stem, x.t_branch), -1, 1)) ≈ rad2deg(x.polar), g)
+                # with no offset the fit is at the fruit start, where its window begins
+                (off == 0) && @test all(x -> norm(x.p_fit - x.window[1]) < 1e-6, g)
+            end
+        end
+
+        @testset "Plain results conversion (scripts/results_io.jl)" begin
+            plain = Dict{String, Any}(id => ResultsIO.to_plain(r) for (id, r) in res)
+            ResultsIO.check_plain(plain) # only Base types
+            data = Dict{String, Any}("format" => ResultsIO.FORMAT, "results" => plain)
+            back = ResultsIO.results_from_plain(data)
+            @test isequal(ResultsIO.to_plain(back["plant_A"]), plain["plant_A"])
+            @test back["plant_A"].vol_params.bbox == saved.vol_params.bbox
+            # a field that the type no longer has is dropped, a missing one takes its default value
+            p2 = deepcopy(plain)
+            delete!(p2["plant_A"]["skel_params"], "offset")
+            p2["plant_A"]["skel_params"]["removed_field"] = 1
+            b2 = (@test_logs (:warn,) (:info,) match_mode = :any ResultsIO.results_from_plain(Dict("format" => ResultsIO.FORMAT, "results" => p2)))
+            @test b2["plant_A"].skel_params.offset == 2.0
+        end
+
         @testset "Results saved by earlier versions" begin
             # test/data/legacy_results.jls was written for this same synthetic scan by the version
-            # before the emergence offset (fc8d79e): old files must keep loading and be updatable
-            legacy = load_results(joinpath(@__DIR__, "data", "legacy_results.jls"))
+            # before the emergence offset (fc8d79e). The offset is now a skeleton parameter, so such a
+            # file cannot be read directly anymore: it is converted with scripts/results_io.jl, whose
+            # dump (made with that version) is test/data/legacy_results.plain.jls
+            legacy_file = joinpath(@__DIR__, "data", "legacy_results.jls")
+            err = try load_results(legacy_file); nothing catch e; e end
+            @test err isa ErrorException && occursin("results_io.jl", err.msg)
+            legacy = ResultsIO.results_from_plain(deserialize(joinpath(@__DIR__, "data", "legacy_results.plain.jls")))
             old = legacy["plant_A"]
+            @test old.skel_params.offset == 2.0 # missing field: default value
             @test old isa ROMIResults
             @test length(old.result.azimuth) == n_branches
             rv3 = quiet(() -> ROMIViewer(scan;
@@ -176,10 +230,10 @@
             err_new = angdist.(rad2deg.(a_new.azimuth), rad2deg.(truth.azimuths))
             err_old = angdist.(rad2deg.(old.result.azimuth), rad2deg.(truth.azimuths))
             @test all(err_new .≤ err_old .+ 1) && sum(err_new) < sum(err_old)
-            # saving over an old file updates it in place
+            # saving over a converted file updates it in place
             upd_dir = mktempdir()
             upd_file = joinpath(upd_dir, basename(upd_dir) * "_ROMIAnglesAndInternodes.jls")
-            cp(joinpath(@__DIR__, "data", "legacy_results.jls"), upd_file)
+            serialize(upd_file, legacy)
             st = R.ROMIViewerState(upd_dir, [scan_dir], 1, rv3, Dict{String, ROMIResults}())
             R.load_results!(st)
             quiet(() -> R.commit_result!(st, rv3))
